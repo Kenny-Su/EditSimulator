@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edit Workbench</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <span class="brand">Passages</span>
+    <div class="sidebar-heading"><span>Saved</span><span id="case-count">0</span></div>
+    <button id="new-case" class="primary full">New passage</button>
+    <nav id="case-list" aria-label="Saved cases"></nav>
+  </aside>
+  <main>
+    <header class="topbar"><div><h1>Edit Workbench</h1><span id="model" class="muted">Model not configured</span></div><div class="export-tools">
+      <label class="sr-only" for="export-scope">Export scope</label>
+      <select id="export-scope"><option value="all">All cases</option><option value="reviewed">Reviewed runs</option></select>
+      <button id="export">Export JSON</button>
+    </div></header>
+    <div id="message" role="alert" hidden></div>
+    <section class="card input-card">
+      <div class="section-head"><h2 id="case-heading">Passage</h2><span id="save-status" role="status">Not saved yet</span></div>
+      <form id="case-form">
+        <div class="source-grid">
+          <label>URL <span class="required">*</span><input type="url" name="identifier" placeholder="https://arxiv.org/abs/2401.01234" required></label>
+          <label>Paper title <span class="optional">optional</span><input name="title" placeholder="Paper title"></label>
+        </div>
+        <label>Original passage <span class="required">*</span><textarea name="original" rows="5" placeholder="Paste a passage." required></textarea></label>
+        <div class="instruction-grid">
+          <label>Editing instruction <span class="required">*</span><textarea name="instruction" rows="3" placeholder="Make this passage more concise. Preserve numbers and hedging." required></textarea></label>
+        </div>
+        <div class="form-bottom"><p id="configuration-note" class="muted"></p><button type="submit" id="generate" class="primary">Generate revision</button></div>
+      </form>
+    </section>
+    <section class="card review-card" id="review-section">
+      <div class="section-head"><h2>Review</h2><div class="run-picker"><label for="run-select">Run</label><select id="run-select" disabled><option>No runs yet</option></select></div></div>
+      <div id="review-empty" class="empty"><p>Generate a revision to review its edits.</p></div>
+      <div id="review-content" hidden>
+        <div class="run-context"><span class="eyebrow">Instruction</span><p id="run-instruction"></p></div>
+        <div id="run-info" class="muted"></div>
+        <div id="run-error" role="status" hidden></div>
+        <div id="completed-review" hidden>
+          <div class="review-toolbar"><span id="progress"></span><button id="mark-reviewed">Mark reviewed ✓</button></div>
+          <details class="full-passage"><summary>Full passage</summary><div class="passages"><section><h3>Original</h3><div id="original-view" class="passage"></div></section><section><h3>Revision</h3><div id="revised-view" class="passage"></div></section></div></details>
+          <div class="annotation-layout"><nav id="edit-list" aria-label="Edits"></nav>
+            <section id="annotation-panel">
+              <div id="no-edit" class="empty"><p>No edits to label. Review the unchanged text, then mark this run reviewed.</p></div>
+              <div id="edit-controls" hidden>
+                <div class="annotation-head"><h3 id="edit-title">Edit</h3><div><button id="previous-edit" aria-label="Previous edit">←</button><button id="next-edit" aria-label="Next edit">→</button></div></div>
+                <div class="edit-excerpts"><div><span class="eyebrow">Before</span><div id="edit-before" class="sentence-context original"></div></div><div><span class="eyebrow">After</span><div id="edit-after" class="sentence-context revised"></div></div></div>
+                <div class="label-grid">
+                  <label>Acceptability<select id="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option><option value="uncertain">Uncertain</option></select></label>
+                  <label>What changed?<select id="change-type"><option value="">Choose a type…</option><option value="wording_only">Wording only</option><option value="fidelity_relevant">Fidelity relevant</option><option value="uncertain">Uncertain</option></select></label>
+                </div>
+                <fieldset id="dimensions" hidden><legend>Fidelity dimensions <span class="optional">optional</span></legend><div class="checks">
+                  <label><input type="checkbox" value="certainty">Certainty</label><label><input type="checkbox" value="precision">Precision</label><label><input type="checkbox" value="scope">Scope</label><label><input type="checkbox" value="emphasis">Emphasis</label><label><input type="checkbox" value="other">Other</label>
+                </div></fieldset>
+                <p id="annotation-status" class="muted" role="status"></p>
+                <details id="grouping"><summary>Adjust grouping</summary><p class="muted">Merging or splitting clears labels on the affected edits.</p><button id="merge-next">Merge with next edit</button>
+                  <div class="split-controls"><label>Original split point<select id="original-cut"></select></label><label>Revision split point<select id="revised-cut"></select></label><button id="split-edit">Split into two edits</button></div>
+                </details>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
