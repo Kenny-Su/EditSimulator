@@ -39,7 +39,7 @@ def generate(client, case):
 
 
 def label(client, edit_id, **changes):
-    value = {"acceptability": "acceptable", "change_type": "wording_only", "dimensions": []}
+    value = {"acceptability": "acceptable", "change_type": "wording_only", "dimensions": [], "confirmed": True}
     value.update(changes)
     response = client.put(f"/api/edits/{edit_id}/annotation", json=value)
     assert response.status_code == 200, response.json
@@ -87,7 +87,7 @@ def test_end_to_end_persistence_snapshot_review_and_export(app, client):
     assert restored["snapshot"]["source"]["identifier"] == "https://arxiv.org/abs/2401.12345"
     assert restored["labeled_count"] == 1
     export = restarted.get("/api/export?scope=reviewed").json
-    assert export["schema_version"] == 1
+    assert export["schema_version"] == 2
     exported_run = export["cases"][0]["runs"][0]
     assert exported_run["snapshot"] == restored["snapshot"]
     assert exported_run["edits"][0]["id"] == restored["edits"][0]["id"]
@@ -95,12 +95,6 @@ def test_end_to_end_persistence_snapshot_review_and_export(app, client):
     assert "secret-test-key" not in json.dumps(client.get("/api/config").json)
     label(restarted, restored["edits"][0]["id"])
     assert restarted.get("/api/export?scope=reviewed").json["cases"] == []
-
-
-
-
-
-
 
 
 def test_merge_split_invalidate_only_affected_labels(app, client):
@@ -138,3 +132,91 @@ def test_zero_edit_confirmation(app, client):
     assert run["edits"] == []
     assert client.post(f"/api/runs/{run['id']}/review", json={}).status_code == 400
     assert client.post(f"/api/runs/{run['id']}/review", json={"confirm_zero_edits": True}).status_code == 200
+
+
+def test_suggestions_require_confirmation_and_preserve_provenance(app, client):
+    run = generate(client, new_case(client))
+    edit_id = run['edits'][0]['id']
+    proposal = {'edit_id': edit_id, 'acceptability': 'unacceptable', 'change_type': 'fidelity_relevant',
+                'dimensions': ['precision'], 'explanation': 'Changes 10% to 12%.', 'needs_split': False}
+    app.config['GENERATOR'] = lambda request, key: fake_result(json.dumps({'edits': [proposal]}))
+    run = client.post(f"/api/runs/{run['id']}/suggest", json={}).json
+    job = run['suggestion_jobs'][0]
+    assert job['status'] == 'completed' and job['request']['model'] == 'test-model'
+    assert run['edits'][0]['annotation'] is None and run['labeled_count'] == 0
+    assert client.post(f"/api/runs/{run['id']}/review", json={}).status_code == 400
+    draft = label(client, edit_id, confirmed=False, suggestion_job_id=job['id'])
+    assert draft['labeled_count'] == 0
+    run = label(client, edit_id, suggestion_job_id=job['id'])
+    assert run['labeled_count'] == 1
+    assert run['edits'][0]['suggestion']['acceptability'] == 'unacceptable'
+    assert run['edits'][0]['annotation']['acceptability'] == 'acceptable'
+    assert client.post(f"/api/runs/{run['id']}/review", json={}).status_code == 200
+    restarted = create_app(dict(app.config)).test_client()
+    exported = restarted.get('/api/export?scope=reviewed').json['cases'][0]['runs'][0]
+    assert exported['edits'][0]['annotation']['confirmed_at']
+    assert exported['edits'][0]['annotation']['suggestion_job_id'] == job['id']
+    assert exported['suggestion_jobs'][0]['response'] == job['response']
+    response = restarted.post(f"/api/runs/{run['id']}/regroup", json={
+        'action': 'split', 'edit_id': edit_id, 'original_cut': 11, 'revised_cut': 15})
+    assert response.status_code == 200, response.json
+    assert all(e['annotation'] is None and e['suggestion'] is None for e in response.json['run']['edits'])
+
+
+@pytest.mark.parametrize('mode', ['incomplete', 'bad_ids', 'exception'])
+def test_failed_suggestions_do_not_create_labels(app, client, mode):
+    run = generate(client, new_case(client))
+    def reply(request, key):
+        if mode == 'exception':
+            raise RuntimeError('secret-test-key')
+        return fake_result('{"edits": []}', status='incomplete' if mode == 'incomplete' else 'completed')
+    app.config['GENERATOR'] = reply
+    result = client.post(f"/api/runs/{run['id']}/suggest", json={}).json
+    assert result['suggestion_jobs'][0]['status'] == 'failed'
+    assert 'secret-test-key' not in result['suggestion_jobs'][0]['error']
+    assert result['edits'][0]['suggestion'] is None and result['labeled_count'] == 0
+
+
+def test_delete_annotation_run_and_case(app, client):
+    from workbench import db
+    case = new_case(client)
+    run = generate(client, case)
+    edit_id = run['edits'][0]['id']
+    proposal = dict(edit_id=edit_id, acceptability='unacceptable', change_type='fidelity_relevant',
+                    dimensions=['precision'], explanation='Changes the number.', needs_split=False)
+    app.config['GENERATOR'] = lambda request, key: fake_result(json.dumps({'edits': [proposal]}))
+    run = client.post(f"/api/runs/{run['id']}/suggest", json={}).json
+    job_id = run['suggestion_jobs'][0]['id']
+    label(client, edit_id, suggestion_job_id=job_id)
+    client.post(f"/api/runs/{run['id']}/review", json={})
+    cleared = client.delete(f'/api/edits/{edit_id}/annotation', json={}).json
+    assert cleared['edits'][0]['annotation'] is None
+    assert cleared['edits'][0]['suggestion'] and not cleared['reviewed_at']
+    assert cleared['labeled_count'] == 0
+    # Delete a confirmed, assisted annotation through run deletion too.
+    label(client, edit_id, suggestion_job_id=job_id)
+    app.config['GENERATOR'] = lambda request, key: fake_result('A new revision.')
+    other_run = generate(client, case)
+    assert client.delete(f"/api/runs/{run['id']}", json={}).status_code == 200
+    assert client.get(f"/api/runs/{run['id']}").status_code == 404
+    assert client.get(f"/api/runs/{other_run['id']}").status_code == 200
+    other_case = new_case(client)
+    assert client.delete(f"/api/cases/{case['id']}", json={}).status_code == 200
+    exported = client.get('/api/export').json['cases']
+    assert [c['id'] for c in exported] == [other_case['id']]
+    with db.connect(app.config['DATABASE']) as connection:
+        assert not connection.execute('PRAGMA foreign_key_check').fetchall()
+        for table in ('runs', 'edit_groups', 'suggestion_jobs', 'suggestions', 'annotations'):
+            assert connection.execute(f'SELECT count(*) FROM {table}').fetchone()[0] == 0
+
+
+def test_delete_case_rolls_back_when_run_pending(app, client):
+    from workbench import db
+    case = new_case(client)
+    first = generate(client, case)
+    second = generate(client, case)
+    with db.connect(app.config['DATABASE']) as connection:
+        connection.execute("UPDATE runs SET status='pending' WHERE id=?", (second['id'],))
+    assert client.delete(f"/api/cases/{case['id']}", json={}).status_code == 409
+    assert client.get(f"/api/runs/{first['id']}").status_code == 200
+    assert len(client.get(f"/api/cases/{case['id']}").json['runs']) == 2

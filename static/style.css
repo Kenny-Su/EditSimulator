@@ -111,3 +111,10 @@ summary { color: #666; }
 .neighbor:empty { display: none; }
 .target-sentence { margin: 8px 0; padding-left: 10px; border-left: 2px solid #555; }
 .edit-excerpts > div { min-width: 0; }
+
+#suggestion { border-left: 2px solid #ccc; padding: 8px 12px; margin-bottom: 16px; }
+#suggestion-explanation { margin-top: 4px; }
+#suggestion-split { margin-top: 6px; font-weight: 500; }
+#suggestion-status:not(:empty) { margin-bottom: 12px; }
+.review-toolbar { gap: 8px; flex-wrap: wrap; }
+#progress { margin-right: auto; }

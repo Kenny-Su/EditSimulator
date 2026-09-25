@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const fields = ['identifier', 'title', 'original', 'instruction'];
 let caseId = null, currentCase = null, run = null, selectedId = null;
 let formDirty = false, annotationDirty = false, formSave = null, annotationSave = null;
-let formTimer, annotationTimer, generating = false, config = {};
+let formTimer, annotationTimer, generating = false, suggesting = false, config = {};
 
 async function api(url, options = {}) {
   const response = await fetch(url, {headers: {'Content-Type': 'application/json'}, ...options});
@@ -33,7 +33,7 @@ async function refreshCases() {
     const status = document.createElement('small');
     const latest = item.latest_run;
     status.textContent = !latest ? 'Draft' : latest.reviewed_at ? '✓ Reviewed' : latest.status === 'completed'
-      ? `${latest.labeled_count} / ${latest.edit_count} edits labeled` : latest.status;
+      ? `${latest.labeled_count} / ${latest.edit_count} edits confirmed` : latest.status;
     button.append(title, source, status);
     button.onclick = perform(async () => { await flushAll(); await openCase(item.id); });
     $('case-list').append(button);
@@ -53,6 +53,7 @@ async function flushForm() {
           method: caseId ? 'PATCH' : 'POST', body: JSON.stringify(values)
         });
         caseId = currentCase.id;
+        $('delete-case').hidden = false;
         history.replaceState(null, '', `/#${caseId}`);
         $('case-heading').textContent = 'Passage';
         saveStatus('Saved locally');
@@ -67,7 +68,8 @@ async function flushForm() {
 
 function annotationValues() {
   return {acceptability: $('acceptability').value || null, change_type: $('change-type').value || null,
-    dimensions: [...$('dimensions').querySelectorAll('input:checked')].map(input => input.value)};
+    dimensions: [...$('dimensions').querySelectorAll('input:checked')].map(input => input.value),
+    confirmed: false, suggestion_job_id: run.edits.find(e => e.id === selectedId)?.suggestion?.job_id || null};
 }
 
 async function flushAnnotation() {
@@ -114,6 +116,8 @@ function setRunOptions(runs) {
 }
 
 function renderRun() {
+  $('delete-case').hidden = !caseId;
+  $('delete-run').disabled = !run || run.status === 'pending' || run.suggestion_jobs.some(j => j.status === 'pending');
   $('review-empty').hidden = !!run; $('review-content').hidden = !run;
   if (!run) return;
   $('run-instruction').textContent = [run.snapshot.instruction, run.snapshot.constraints].filter(Boolean).join('\n\n');
@@ -136,10 +140,16 @@ function renderRun() {
       view.append(button);
     }
   }
+  const job = run.suggestion_jobs.at(-1);
+  const pending = job?.status === 'pending';
+  $('suggest-labels').disabled = suggesting || pending || !config.generation_ready || !run.edits.some(e => !e.suggestion);
+  $('suggest-labels').textContent = pending ? 'Suggesting…' : 'Suggest labels';
+  $('suggestion-status').textContent = job?.error || (pending ? 'Generating suggestions. Reopen this run to refresh.' :
+    run.edits.some(e => e.suggestion) ? 'Suggestions ready. Confirm or correct each edit below.' : '');
   renderProgress(); renderEditList(); selectEdit(selectedId);
 }
 function renderProgress() {
-  $('progress').textContent = run.reviewed_at ? `✓ Reviewed · ${run.edits.length} edits` : `${run.labeled_count} of ${run.edits.length} edits labeled`;
+  $('progress').textContent = run.reviewed_at ? `✓ Reviewed · ${run.edits.length} edits` : `${run.labeled_count} of ${run.edits.length} edits confirmed`;
   $('mark-reviewed').disabled = annotationDirty || !!run.reviewed_at || run.labeled_count !== run.edits.length;
   $('mark-reviewed').textContent = run.reviewed_at ? 'Reviewed ✓' : 'Mark reviewed ✓';
   const option = [...$('run-select').options].find(option => option.value === run.id);
@@ -166,9 +176,17 @@ function selectEdit(id) {
   $('edit-title').textContent = `Edit ${index + 1} of ${run.edits.length}`;
   renderSentenceContext($('edit-before'), edit, 'original');
   renderSentenceContext($('edit-after'), edit, 'revised');
-  $('acceptability').value = edit.annotation?.acceptability || '';
-  $('change-type').value = edit.annotation?.change_type || '';
-  for (const checkbox of $('dimensions').querySelectorAll('input')) checkbox.checked = edit.annotation?.dimensions.includes(checkbox.value) || false;
+  const labels = edit.annotation || edit.suggestion;
+  $('acceptability').value = labels?.acceptability || '';
+  $('change-type').value = labels?.change_type || '';
+  for (const checkbox of $('dimensions').querySelectorAll('input')) checkbox.checked = labels?.dimensions.includes(checkbox.value) || false;
+  $('suggestion').hidden = !edit.suggestion;
+  if (edit.suggestion) {
+    const s = edit.suggestion;
+    $('suggestion-labels').textContent = [s.acceptability, s.change_type.replaceAll('_', ' '), ...s.dimensions].join(' · ');
+    $('suggestion-explanation').textContent = s.explanation;
+    $('suggestion-split').hidden = !s.needs_split;
+  }
   $('previous-edit').disabled = index === 0; $('next-edit').disabled = index === run.edits.length - 1;
   $('merge-next').disabled = index === run.edits.length - 1;
   for (const side of ['original', 'revised']) {
@@ -201,10 +219,14 @@ function updateLabelVisibility() {
 }
 function updateAnnotationStatus() {
   const edit = run.edits.find(e => e.id === selectedId);
-  $('annotation-status').textContent = edit?.complete ? 'Saved locally · label complete' : 'Choose acceptability and change type.';
+  $('delete-annotation').hidden = !edit?.annotation && !annotationDirty;
+  $('annotation-status').textContent = edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
+    'Draft saved · confirm when ready' : edit?.suggestion ? 'Suggested labels · awaiting your confirmation' : 'Choose labels, then confirm.';
+  $('confirm-annotation').disabled = !$('acceptability').value || !$('change-type').value;
+  $('confirm-annotation').textContent = run.edits.at(-1)?.id === selectedId ? 'Confirm' : 'Confirm & next';
 }
 function scheduleAnnotation() {
-  annotationDirty = true; updateLabelVisibility();
+  annotationDirty = true; updateLabelVisibility(); updateAnnotationStatus();
   $('mark-reviewed').disabled = true;
   $('annotation-status').textContent = 'Unsaved changes…';
   clearTimeout(annotationTimer); annotationTimer = setTimeout(() => flushAnnotation().catch(message), 450);
@@ -238,11 +260,54 @@ $('case-form').addEventListener('submit', perform(async event => {
     generating = false; $('generate').disabled = false; $('generate').textContent = 'Generate revision';
   }
 }));
+$('suggest-labels').onclick = perform(async () => {
+  if (suggesting) return;
+  await flushAll(); clearMessage(); suggesting = true;
+  $('suggest-labels').textContent = 'Suggesting…';
+  const regions = [document.querySelector('main'), document.querySelector('.sidebar')];
+  regions.forEach(region => { region.inert = true; });
+  try {
+    run = await api(`/api/runs/${run.id}/suggest`, {method: 'POST', body: '{}'});
+    await refreshCases();
+  } finally {
+    suggesting = false; regions.forEach(region => { region.inert = false; }); renderRun();
+  }
+});
+$('confirm-annotation').onclick = perform(async () => {
+  $('confirm-annotation').disabled = true;
+  try {
+    await flushAnnotation();
+    const values = {...annotationValues(), confirmed: true};
+    run = await api(`/api/edits/${selectedId}/annotation`, {method: 'PUT', body: JSON.stringify(values)});
+    const index = run.edits.findIndex(e => e.id === selectedId);
+    selectedId = run.edits[index + 1]?.id || selectedId;
+    renderRun(); await refreshCases();
+  } finally { updateAnnotationStatus(); }
+});
 $('new-case').onclick = perform(async () => {
   await flushAll(); clearMessage(); caseId = null; currentCase = null; run = null; selectedId = null;
   $('case-form').reset(); history.replaceState(null, '', '/'); $('case-heading').textContent = 'Passage';
   saveStatus('Not saved yet'); setRunOptions([]); renderRun(); await refreshCases();
   $('case-form').elements.identifier.focus();
+});
+$('delete-annotation').onclick = perform(async () => {
+  await flushAnnotation();
+  run = await api(`/api/edits/${selectedId}/annotation`, {method: 'DELETE', body: '{}'});
+  annotationDirty = false; renderRun(); await refreshCases();
+});
+$('delete-run').onclick = perform(async () => {
+  if (!confirm('Permanently delete this run, including its revision, suggestions, and annotations? Other runs will remain.')) return;
+  await flushAll();
+  await api(`/api/runs/${run.id}`, {method: 'DELETE', body: '{}'});
+  await openCase(caseId);
+});
+$('delete-case').onclick = perform(async () => {
+  if (!confirm('Permanently delete this passage and all its runs, suggestions, and annotations? This cannot be undone.')) return;
+  await flushAll();
+  await api(`/api/cases/${caseId}`, {method: 'DELETE', body: '{}'});
+  caseId = null; currentCase = null; run = null; selectedId = null;
+  $('case-form').reset(); history.replaceState(null, '', '/');
+  saveStatus('Not saved yet'); setRunOptions([]); renderRun(); await refreshCases();
 });
 $('run-select').onchange = perform(async () => {
   const id = $('run-select').value;
@@ -259,7 +324,7 @@ async function regroup(action) {
   const edit = run.edits.find(e => e.id === selectedId);
   const index = run.edits.indexOf(edit);
   const affected = action === 'merge' ? run.edits.slice(index, index + 2) : [edit];
-  if (affected.some(e => e.annotation) && !confirm('This will clear labels on the affected edits. Continue?')) return;
+  if (affected.some(e => e.annotation || e.suggestion) && !confirm('This will clear suggestions and labels on the affected edits. Continue?')) return;
   const data = {action, edit_id: selectedId};
   if (action === 'split') { data.original_cut = Number($('original-cut').value); data.revised_cut = Number($('revised-cut').value); }
   const result = await api(`/api/runs/${run.id}/regroup`, {method: 'POST', body: JSON.stringify(data)});
@@ -278,7 +343,7 @@ $('export').onclick = perform(async () => {
   window.location.assign(`/api/export?scope=${$('export-scope').value}`);
 });
 window.addEventListener('beforeunload', event => {
-  if (formDirty || annotationDirty || formSave || annotationSave || generating) { event.preventDefault(); event.returnValue = ''; }
+  if (formDirty || annotationDirty || formSave || annotationSave || generating || suggesting) { event.preventDefault(); event.returnValue = ''; }
 });
 (async () => {
   try {

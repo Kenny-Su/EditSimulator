@@ -52,7 +52,24 @@ def initialize(path):
           acceptability TEXT, change_type TEXT, dimensions_json TEXT NOT NULL DEFAULT '[]',
           reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS suggestion_jobs (
+          id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), status TEXT NOT NULL,
+          model TEXT NOT NULL, request_json TEXT NOT NULL, response_json TEXT, error TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_pending_suggestion ON suggestion_jobs(status) WHERE status='pending';
+        CREATE TABLE IF NOT EXISTS suggestions (
+          edit_id TEXT PRIMARY KEY REFERENCES edit_groups(id) ON DELETE CASCADE,
+          job_id TEXT NOT NULL REFERENCES suggestion_jobs(id), labels_json TEXT NOT NULL
+        );
         """)
+        if "confirmed_at" not in {row["name"] for row in db.execute("PRAGMA table_info(annotations)")}:
+            db.execute("ALTER TABLE annotations ADD COLUMN confirmed_at TEXT")
+            # Existing complete labels were manually entered before explicit confirmation existed.
+            db.execute("UPDATE annotations SET confirmed_at=updated_at WHERE acceptability IS NOT NULL AND change_type IS NOT NULL")
+        if "suggestion_job_id" not in {row["name"] for row in db.execute("PRAGMA table_info(annotations)")}:
+            db.execute("ALTER TABLE annotations ADD COLUMN suggestion_job_id TEXT REFERENCES suggestion_jobs(id)")
+        db.execute("UPDATE suggestion_jobs SET status='interrupted', error='Suggestion interrupted. Retry explicitly.', updated_at=? WHERE status='pending'", (now(),))
         if "constraints" in {row["name"] for row in db.execute("PRAGMA table_info(cases)")}:
             db.execute("""UPDATE cases SET instruction = CASE WHEN trim(instruction) = ''
                 THEN constraints ELSE instruction || char(10) || char(10) || constraints END
@@ -78,7 +95,7 @@ def initialize(path):
 
 
 def annotation_complete(a):
-    return bool(a and a.get("acceptability") and a.get("change_type"))
+    return bool(a and a.get("acceptability") and a.get("change_type") and a.get("confirmed_at"))
 
 
 def case_record(db, case_id):
@@ -105,8 +122,17 @@ def run_record(db, run_id):
         group["annotation"] = dict(a) if a else None
         if a:
             group["annotation"]["dimensions"] = json.loads(group["annotation"].pop("dimensions_json"))
+        proposal = db.execute("SELECT * FROM suggestions WHERE edit_id=?", (group["id"],)).fetchone()
+        group["suggestion"] = dict(json.loads(proposal["labels_json"]), job_id=proposal["job_id"]) if proposal else None
         group["complete"] = annotation_complete(group["annotation"])
         run["edits"].append(group)
+    run["suggestion_jobs"] = []
+    for row in db.execute("SELECT * FROM suggestion_jobs WHERE run_id=? ORDER BY created_at", (run_id,)):
+        job = dict(row)
+        for field in ("request", "response"):
+            value = job.pop(field + "_json")
+            job[field] = json.loads(value) if value else None
+        run["suggestion_jobs"].append(job)
     run["labeled_count"] = sum(e["complete"] for e in run["edits"])
     return run
 

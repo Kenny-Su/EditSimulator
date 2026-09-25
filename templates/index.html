@@ -21,7 +21,7 @@
     </div></header>
     <div id="message" role="alert" hidden></div>
     <section class="card input-card">
-      <div class="section-head"><h2 id="case-heading">Passage</h2><span id="save-status" role="status">Not saved yet</span></div>
+      <div class="section-head"><h2 id="case-heading">Passage</h2><div><span id="save-status" role="status">Not saved yet</span> <button id="delete-case" hidden>Delete passage</button></div></div>
       <form id="case-form">
         <div class="source-grid">
           <label>URL <span class="required">*</span><input type="url" name="identifier" placeholder="https://arxiv.org/abs/2401.01234" required></label>
@@ -35,14 +35,15 @@
       </form>
     </section>
     <section class="card review-card" id="review-section">
-      <div class="section-head"><h2>Review</h2><div class="run-picker"><label for="run-select">Run</label><select id="run-select" disabled><option>No runs yet</option></select></div></div>
+      <div class="section-head"><h2>Review</h2><div class="run-picker"><label for="run-select">Run</label><select id="run-select" disabled><option>No runs yet</option></select><button id="delete-run" disabled>Delete run</button></div></div>
       <div id="review-empty" class="empty"><p>Generate a revision to review its edits.</p></div>
       <div id="review-content" hidden>
         <div class="run-context"><span class="eyebrow">Instruction</span><p id="run-instruction"></p></div>
         <div id="run-info" class="muted"></div>
         <div id="run-error" role="status" hidden></div>
         <div id="completed-review" hidden>
-          <div class="review-toolbar"><span id="progress"></span><button id="mark-reviewed">Mark reviewed ✓</button></div>
+          <div class="review-toolbar"><span id="progress"></span><button id="suggest-labels">Suggest labels</button><button id="mark-reviewed">Mark reviewed ✓</button></div>
+          <p id="suggestion-status" class="muted" role="status"></p>
           <details class="full-passage"><summary>Full passage</summary><div class="passages"><section><h3>Original</h3><div id="original-view" class="passage"></div></section><section><h3>Revision</h3><div id="revised-view" class="passage"></div></section></div></details>
           <div class="annotation-layout"><nav id="edit-list" aria-label="Edits"></nav>
             <section id="annotation-panel">
@@ -50,6 +51,7 @@
               <div id="edit-controls" hidden>
                 <div class="annotation-head"><h3 id="edit-title">Edit</h3><div><button id="previous-edit" aria-label="Previous edit">←</button><button id="next-edit" aria-label="Next edit">→</button></div></div>
                 <div class="edit-excerpts"><div><span class="eyebrow">Before</span><div id="edit-before" class="sentence-context original"></div></div><div><span class="eyebrow">After</span><div id="edit-after" class="sentence-context revised"></div></div></div>
+                <div id="suggestion" hidden><span class="eyebrow">LLM suggestion · verify before confirming</span><p id="suggestion-labels"></p><p id="suggestion-explanation"></p><p id="suggestion-split" hidden>Mixed judgments: consider splitting this edit under Adjust grouping.</p></div>
                 <div class="label-grid">
                   <label>Acceptability<select id="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option><option value="uncertain">Uncertain</option></select></label>
                   <label>What changed?<select id="change-type"><option value="">Choose a type…</option><option value="wording_only">Wording only</option><option value="fidelity_relevant">Fidelity relevant</option><option value="uncertain">Uncertain</option></select></label>
@@ -57,8 +59,10 @@
                 <fieldset id="dimensions" hidden><legend>Fidelity dimensions <span class="optional">optional</span></legend><div class="checks">
                   <label><input type="checkbox" value="certainty">Certainty</label><label><input type="checkbox" value="precision">Precision</label><label><input type="checkbox" value="scope">Scope</label><label><input type="checkbox" value="emphasis">Emphasis</label><label><input type="checkbox" value="other">Other</label>
                 </div></fieldset>
+                <button id="confirm-annotation" class="primary">Confirm &amp; next</button>
+                <button id="delete-annotation" hidden>Clear annotation</button>
                 <p id="annotation-status" class="muted" role="status"></p>
-                <details id="grouping"><summary>Adjust grouping</summary><p class="muted">Merging or splitting clears labels on the affected edits.</p><button id="merge-next">Merge with next edit</button>
+                <details id="grouping"><summary>Adjust grouping</summary><p class="muted">Merging or splitting clears suggestions and labels on the affected edits.</p><button id="merge-next">Merge with next edit</button>
                   <div class="split-controls"><label>Original split point<select id="original-cut"></select></label><label>Revision split point<select id="revised-cut"></select></label><button id="split-edit">Split into two edits</button></div>
                 </details>
               </div>
