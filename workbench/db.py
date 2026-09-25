@@ -58,6 +58,10 @@ def initialize(path):
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS one_pending_suggestion ON suggestion_jobs(status) WHERE status='pending';
+        CREATE TABLE IF NOT EXISTS requirement_audits (
+          run_id TEXT PRIMARY KEY REFERENCES runs(id), suggestion_json TEXT, annotation_json TEXT,
+          job_id TEXT REFERENCES suggestion_jobs(id), confirmed_at TEXT, updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS suggestions (
           edit_id TEXT PRIMARY KEY REFERENCES edit_groups(id) ON DELETE CASCADE,
           job_id TEXT NOT NULL REFERENCES suggestion_jobs(id), labels_json TEXT NOT NULL
@@ -115,6 +119,12 @@ def run_record(db, run_id):
     for field in ("snapshot", "request", "response"):
         value = run.pop(field + "_json")
         run[field] = json.loads(value) if value else None
+    audit = db.execute("SELECT * FROM requirement_audits WHERE run_id=?", (run_id,)).fetchone()
+    run["requirement_audit"] = dict(audit) if audit else None
+    if audit:
+        for field in ("suggestion", "annotation"):
+            value = run["requirement_audit"].pop(field + "_json")
+            run["requirement_audit"][field] = json.loads(value) if value else None
     run["edits"] = []
     for row in db.execute("SELECT * FROM edit_groups WHERE run_id=? ORDER BY position", (run_id,)):
         group = dict(row)

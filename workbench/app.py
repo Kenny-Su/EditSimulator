@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, render_template, request
 
-from . import db as storage, diffing, generation, suggestions
+from . import db as storage, diffing, generation, requirements
 
 
 def create_app(config=None):
@@ -214,47 +214,29 @@ def create_app(config=None):
     def read_run(run_id):
         return jsonify(display_run(get_run(run_id)))
 
-    @app.post("/api/runs/<run_id>/suggest")
-    def suggest(run_id):
-        payload()
-        if not app.config["OPENAI_API_KEY"] or not app.config["OPENAI_MODEL"]:
-            abort(400, description="Configure OPENAI_API_KEY and OPENAI_MODEL, then restart.")
+    @app.route("/api/runs/<run_id>/requirements", methods=["PUT", "DELETE"])
+    def requirements_audit(run_id):
+        data = payload()
         with db():
             db().execute("BEGIN IMMEDIATE")
-            if db().execute("SELECT 1 FROM suggestion_jobs WHERE status='pending'").fetchone() or db().execute("SELECT 1 FROM runs WHERE status='pending'").fetchone():
-                abort(409, description="A model request is already running.")
             run = get_run(run_id, completed=True)
-            edits = [e for e in run["edits"] if not e["suggestion"]]
-            if not edits:
-                abort(400, description="No edits need suggestions.")
-            api_request = suggestions.build_request(run, edits, app.config["OPENAI_MODEL"])
-            job_id, stamp = storage.uid(), storage.now()
-            db().execute("""INSERT INTO suggestion_jobs
-                (id,run_id,status,model,request_json,created_at,updated_at) VALUES (?,?,'pending',?,?,?,?)""",
-                (job_id, run_id, app.config["OPENAI_MODEL"], json.dumps(api_request), stamp, stamp))
-        result = None
-        try:
-            result = app.config["GENERATOR"](api_request, app.config["OPENAI_API_KEY"])
-            if result.get("status") != "completed":
-                raise ValueError("Incomplete response")
-            proposals = suggestions.parse(result.get("text") or "", edits)
-            with db():
-                db().execute("BEGIN IMMEDIATE")
-                current_ids = {e["id"] for e in get_run(run_id)["edits"]}
-                if not all(e["id"] in current_ids for e in edits):
-                    raise ValueError("Grouping changed")
-                for proposal in proposals:
-                    db().execute("INSERT INTO suggestions VALUES (?,?,?)",
-                                 (proposal["edit_id"], job_id, json.dumps(proposal)))
-                db().execute("UPDATE suggestion_jobs SET status='completed',model=?,response_json=?,updated_at=? WHERE id=?",
-                             (result.get("model") or app.config["OPENAI_MODEL"], json.dumps(result["raw"]), storage.now(), job_id))
-        except Exception as error:
-            code = getattr(error, "status_code", None)
-            message = f"Suggestions failed ({type(error).__name__}" + (f", HTTP {code}" if code else "") + "). Retry Suggest labels."
-            with db():
-                db().execute("UPDATE suggestion_jobs SET status='failed',response_json=?,error=?,updated_at=? WHERE id=?",
-                             (json.dumps(result["raw"]) if result else None, message, storage.now(), job_id))
-        return jsonify(display_run(get_run(run_id))), 201
+            if any(j["status"] == "pending" for j in run["suggestion_jobs"]):
+                abort(409, description="Wait for suggestions to finish.")
+            stamp = storage.now()
+            if request.method == "DELETE":
+                db().execute("DELETE FROM requirement_audits WHERE run_id=?", (run_id,))
+            else:
+                rows = data.get("requirements")
+                try:
+                    requirements.validate_requirements(rows, run, draft=data.get("confirmed") is not True)
+                except ValueError as error:
+                    abort(400, description=str(error))
+                db().execute("""INSERT INTO requirement_audits (run_id,annotation_json,confirmed_at,updated_at)
+                    VALUES (?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET annotation_json=excluded.annotation_json,
+                    confirmed_at=excluded.confirmed_at,updated_at=excluded.updated_at""",
+                    (run_id, json.dumps(rows), stamp if data.get("confirmed") is True else None, stamp))
+            db().execute("UPDATE runs SET reviewed_at=NULL,updated_at=? WHERE id=?", (stamp, run_id))
+        return jsonify(display_run(get_run(run_id)))
 
     @app.put("/api/edits/<edit_id>/annotation")
     def annotate(edit_id):
@@ -277,9 +259,9 @@ def create_app(config=None):
         confirmed = data.get("confirmed") is True
         if confirmed and not (acceptability and change_type):
             abort(400, description="Choose both labels before confirming.")
-        job_id = data.get("suggestion_job_id")
-        if job_id is not None and not db().execute("SELECT 1 FROM suggestions WHERE edit_id=? AND job_id=?", (edit_id, job_id)).fetchone():
-            abort(400, description="Suggestion no longer applies to this edit.")
+        if data.get("suggestion_job_id") is not None:
+            abort(400, description="Annotations must be entered manually.")
+        job_id = None
         stamp = storage.now()
         with db():
             db().execute("""INSERT INTO annotations
@@ -310,6 +292,7 @@ def create_app(config=None):
         if run["status"] == "pending" or any(j["status"] == "pending" for j in run["suggestion_jobs"]):
             abort(409, description="Wait for the model request to finish before deleting.")
         # Edit deletion cascades to annotations and suggestions before their jobs are removed.
+        db().execute("DELETE FROM requirement_audits WHERE run_id=?", (run_id,))
         db().execute("DELETE FROM edit_groups WHERE run_id=?", (run_id,))
         db().execute("DELETE FROM suggestion_jobs WHERE run_id=?", (run_id,))
         db().execute("DELETE FROM runs WHERE id=?", (run_id,))
@@ -364,6 +347,15 @@ def create_app(config=None):
                 removed = [group]
             else:
                 abort(400, description="Choose merge or split.")
+            # Regrouping changes evidence IDs: keep human judgments as drafts, clear their links.
+            audit = run["requirement_audit"]
+            if audit:
+                rows = audit["annotation"]
+                removed_ids = {e["id"] for e in removed}
+                for row in rows or []:
+                    row["edit_ids"] = [i for i in row.get("edit_ids", []) if i not in removed_ids]
+                db().execute("UPDATE requirement_audits SET suggestion_json=NULL,annotation_json=?,confirmed_at=NULL,updated_at=? WHERE run_id=?",
+                             (json.dumps(rows or []), storage.now(), run_id))
             for old in removed:
                 db().execute("DELETE FROM edit_groups WHERE id=?", (old["id"],))
             new_ids = [storage.add_group(db(), run_id, index + i, span) for i, span in enumerate(replacement)]
@@ -379,6 +371,8 @@ def create_app(config=None):
         with db():
             db().execute("BEGIN IMMEDIATE")
             run = get_run(run_id, completed=True)
+            if not run["requirement_audit"] or not run["requirement_audit"]["confirmed_at"]:
+                abort(400, description="Confirm instruction requirements before marking reviewed.")
             if any(not e["complete"] for e in run["edits"]):
                 abort(400, description="Confirm labels for every edit before marking reviewed.")
             if not run["edits"] and data.get("confirm_zero_edits") is not True:
@@ -386,6 +380,31 @@ def create_app(config=None):
             stamp = storage.now()
             db().execute("UPDATE runs SET reviewed_at=?, updated_at=? WHERE id=?", (stamp, stamp, run_id))
         return jsonify(display_run(get_run(run_id)))
+
+    @app.get("/api/runs/<run_id>/export")
+    def export_changes(run_id):
+        with db():
+            db().execute("BEGIN")
+            run = get_run(run_id)
+            if run["status"] != "completed":
+                abort(409, description="Only completed generations can be exported as proposed changes.")
+            changes = []
+            for edit in run["edits"]:
+                change = {key: edit[key] for key in (
+                    "id", "position", "original_start", "original_end", "revised_start", "revised_end")}
+                change["before"] = run["snapshot"]["original"][edit["original_start"]:edit["original_end"]]
+                change["after"] = run["revised"][edit["revised_start"]:edit["revised_end"]]
+                changes.append(change)
+            result = {
+                "schema_version": 1, "export_type": "llm_proposed_changes", "exported_at": storage.now(),
+                "span_convention": "half-open Unicode code-point offsets into snapshot.original and revised",
+                **{key: run[key] for key in ("id", "case_id", "status", "model", "created_at", "snapshot",
+                                           "revised", "request", "response_id", "response")},
+                "changes": changes,
+            }
+        response = jsonify(result)
+        response.headers["Content-Disposition"] = f'attachment; filename="llm-proposed-changes-{run["id"]}.json"'
+        return response
 
     @app.get("/api/export")
     def export():
@@ -397,10 +416,10 @@ def create_app(config=None):
                 case = get_case(row["id"])
                 runs = [get_run(r["id"]) for r in db().execute(
                     "SELECT id FROM runs WHERE case_id=? ORDER BY created_at", (case["id"],))]
-                case["runs"] = [r for r in runs if r["reviewed_at"]] if reviewed_only else runs
+                case["runs"] = [r for r in runs if r["reviewed_at"] and r["requirement_audit"] and r["requirement_audit"]["confirmed_at"]] if reviewed_only else runs
                 if not reviewed_only or case["runs"]:
                     cases.append(case)
-        result = {"schema_version": 2, "exported_at": storage.now(),
+        result = {"schema_version": 3, "exported_at": storage.now(),
                   "span_convention": "half-open Unicode code-point offsets into immutable run snapshot.original and run.revised",
                   "scope": "reviewed" if reviewed_only else "all", "cases": cases}
         response = jsonify(result)

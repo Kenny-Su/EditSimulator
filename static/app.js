@@ -3,7 +3,8 @@ const $ = id => document.getElementById(id);
 const fields = ['identifier', 'title', 'original', 'instruction'];
 let caseId = null, currentCase = null, run = null, selectedId = null;
 let formDirty = false, annotationDirty = false, formSave = null, annotationSave = null;
-let formTimer, annotationTimer, generating = false, suggesting = false, config = {};
+let requirementDirty = false, requirementSave = null, requirementTimer;
+let formTimer, annotationTimer, generating = false, config = {};
 
 async function api(url, options = {}) {
   const response = await fetch(url, {headers: {'Content-Type': 'application/json'}, ...options});
@@ -69,7 +70,7 @@ async function flushForm() {
 function annotationValues() {
   return {acceptability: $('acceptability').value || null, change_type: $('change-type').value || null,
     dimensions: [...$('dimensions').querySelectorAll('input:checked')].map(input => input.value),
-    confirmed: false, suggestion_job_id: run.edits.find(e => e.id === selectedId)?.suggestion?.job_id || null};
+    confirmed: false};
 }
 
 async function flushAnnotation() {
@@ -94,7 +95,7 @@ async function flushAnnotation() {
   try { await annotationSave; } finally { annotationSave = null; }
   await refreshCases();
 }
-async function flushAll() { await flushForm(); await flushAnnotation(); }
+async function flushAll() { await flushForm(); await flushAnnotation(); await flushRequirements(); }
 
 async function openCase(id, preferredRunId = null) {
   clearMessage();
@@ -119,6 +120,7 @@ function renderRun() {
   $('delete-case').hidden = !caseId;
   $('delete-run').disabled = !run || run.status === 'pending' || run.suggestion_jobs.some(j => j.status === 'pending');
   $('review-empty').hidden = !!run; $('review-content').hidden = !run;
+  $('export-changes').disabled = !run || run.status !== 'completed';
   if (!run) return;
   $('run-instruction').textContent = [run.snapshot.instruction, run.snapshot.constraints].filter(Boolean).join('\n\n');
   $('run-info').textContent = `${run.model} · ${dateText(run.created_at)} · Source: ${run.snapshot.source.identifier}`;
@@ -140,18 +142,13 @@ function renderRun() {
       view.append(button);
     }
   }
-  const job = run.suggestion_jobs.at(-1);
-  const pending = job?.status === 'pending';
-  $('suggest-labels').disabled = suggesting || pending || !config.generation_ready || !run.edits.some(e => !e.suggestion);
-  $('suggest-labels').textContent = pending ? 'Suggesting…' : 'Suggest labels';
-  $('suggestion-status').textContent = job?.error || (pending ? 'Generating suggestions. Reopen this run to refresh.' :
-    run.edits.some(e => e.suggestion) ? 'Suggestions ready. Confirm or correct each edit below.' : '');
-  renderProgress(); renderEditList(); selectEdit(selectedId);
+  renderRequirements(); renderProgress(); renderEditList(); selectEdit(selectedId);
 }
 function renderProgress() {
-  $('progress').textContent = run.reviewed_at ? `✓ Reviewed · ${run.edits.length} edits` : `${run.labeled_count} of ${run.edits.length} edits confirmed`;
-  $('mark-reviewed').disabled = annotationDirty || !!run.reviewed_at || run.labeled_count !== run.edits.length;
-  $('mark-reviewed').textContent = run.reviewed_at ? 'Reviewed ✓' : 'Mark reviewed ✓';
+  $('progress').textContent = run.reviewed_at && run.requirement_audit?.confirmed_at ? `✓ Reviewed · ${run.edits.length} edits` : `${run.labeled_count} of ${run.edits.length} edits confirmed`;
+  const checked = !!run.requirement_audit?.confirmed_at;
+  $('mark-reviewed').disabled = annotationDirty || requirementDirty || !checked || !!run.reviewed_at || run.labeled_count !== run.edits.length;
+  $('mark-reviewed').textContent = run.reviewed_at && checked ? 'Reviewed ✓' : 'Mark reviewed ✓';
   const option = [...$('run-select').options].find(option => option.value === run.id);
   if (option) option.textContent = runLabel(run);
 }
@@ -176,17 +173,10 @@ function selectEdit(id) {
   $('edit-title').textContent = `Edit ${index + 1} of ${run.edits.length}`;
   renderSentenceContext($('edit-before'), edit, 'original');
   renderSentenceContext($('edit-after'), edit, 'revised');
-  const labels = edit.annotation || edit.suggestion;
+  const labels = edit.annotation;
   $('acceptability').value = labels?.acceptability || '';
   $('change-type').value = labels?.change_type || '';
   for (const checkbox of $('dimensions').querySelectorAll('input')) checkbox.checked = labels?.dimensions.includes(checkbox.value) || false;
-  $('suggestion').hidden = !edit.suggestion;
-  if (edit.suggestion) {
-    const s = edit.suggestion;
-    $('suggestion-labels').textContent = [s.acceptability, s.change_type.replaceAll('_', ' '), ...s.dimensions].join(' · ');
-    $('suggestion-explanation').textContent = s.explanation;
-    $('suggestion-split').hidden = !s.needs_split;
-  }
   $('previous-edit').disabled = index === 0; $('next-edit').disabled = index === run.edits.length - 1;
   $('merge-next').disabled = index === run.edits.length - 1;
   for (const side of ['original', 'revised']) {
@@ -221,7 +211,7 @@ function updateAnnotationStatus() {
   const edit = run.edits.find(e => e.id === selectedId);
   $('delete-annotation').hidden = !edit?.annotation && !annotationDirty;
   $('annotation-status').textContent = edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
-    'Draft saved · confirm when ready' : edit?.suggestion ? 'Suggested labels · awaiting your confirmation' : 'Choose labels, then confirm.';
+    'Draft saved · confirm when ready' : 'Choose labels, then confirm.';
   $('confirm-annotation').disabled = !$('acceptability').value || !$('change-type').value;
   $('confirm-annotation').textContent = run.edits.at(-1)?.id === selectedId ? 'Confirm' : 'Confirm & next';
 }
@@ -231,6 +221,89 @@ function scheduleAnnotation() {
   $('annotation-status').textContent = 'Unsaved changes…';
   clearTimeout(annotationTimer); annotationTimer = setTimeout(() => flushAnnotation().catch(message), 450);
 }
+
+const outcomes = {
+  request: {fulfilled: 'Fulfilled', partially_fulfilled: 'Partially fulfilled', not_fulfilled: 'Not fulfilled', uncertain: 'Uncertain'},
+  prohibition: {respected: 'Respected', violated: 'Violated', uncertain: 'Uncertain'}
+};
+function requirementValues() {
+  return [...$('requirement-list').children].map(row => ({
+    text: row.querySelector('.requirement-text').value,
+    kind: row.querySelector('.requirement-kind').value,
+    outcome: row.querySelector('.requirement-outcome').value,
+    explanation: row.querySelector('.requirement-explanation').value,
+    edit_ids: [...row.querySelectorAll('input:checked')].map(input => input.value)
+  }));
+}
+function requirementRow(value = {}) {
+  const row = document.createElement('div'); row.className = 'requirement-row';
+  function field(title, element) {
+    const label = document.createElement('label'); label.append(document.createTextNode(title), element); row.append(label); return element;
+  }
+  const text = field('Instruction clause (exact quote)', document.createElement('textarea'));
+  text.className = 'requirement-text'; text.rows = 2; text.value = value.text || '';
+  const kind = field('Kind', document.createElement('select')); kind.className = 'requirement-kind';
+  kind.append(new Option('Positive request', 'request'), new Option('Explicit prohibition', 'prohibition')); kind.value = value.kind || 'request';
+  const outcome = field('Outcome', document.createElement('select')); outcome.className = 'requirement-outcome';
+  function options(selected) { outcome.replaceChildren(new Option('Choose…', '')); for (const [key, label] of Object.entries(outcomes[kind.value])) outcome.append(new Option(label, key)); outcome.value = selected || ''; }
+  options(value.outcome);
+  kind.onchange = () => { options(''); scheduleRequirements(); };
+  const explanation = field('Evidence / note (optional)', document.createElement('textarea'));
+  explanation.className = 'requirement-explanation'; explanation.rows = 2; explanation.value = value.explanation || '';
+  const links = document.createElement('details'); const summary = document.createElement('summary');
+  summary.textContent = 'Linked edits (optional)'; links.append(summary);
+  for (const [index, edit] of run.edits.entries()) {
+    const label = document.createElement('label'); const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = edit.id;
+    checkbox.checked = (value.edit_ids || []).includes(edit.id);
+    label.append(checkbox, document.createTextNode(`Edit ${index + 1}: ${edit.original_text || '∅'} → ${edit.revised_text || '∅'}`)); links.append(label);
+  }
+  row.append(links);
+  const remove = document.createElement('button'); remove.textContent = 'Remove requirement';
+  remove.onclick = () => { row.remove(); scheduleRequirements(); }; row.append(remove);
+  row.addEventListener('input', scheduleRequirements); row.addEventListener('change', scheduleRequirements);
+  $('requirement-list').append(row);
+}
+function renderRequirements() {
+  const audit = run.requirement_audit;
+  $('requirement-list').replaceChildren();
+  for (const value of audit?.annotation ?? []) requirementRow(value);
+  $('clear-requirements').disabled = !audit;
+  $('requirements-status').textContent = audit?.confirmed_at ? 'All instruction clauses and outcomes confirmed.' :
+    audit?.annotation ? 'Draft saved. Check clause coverage and outcomes, then confirm.' :
+    'Add instruction requirements manually, even for an unchanged revision.';
+}
+function scheduleRequirements() {
+  requirementDirty = true; $('mark-reviewed').disabled = true;
+  $('requirements-status').textContent = 'Saving draft…'; clearTimeout(requirementTimer);
+  requirementTimer = setTimeout(() => flushRequirements().catch(message), 500);
+}
+async function flushRequirements() {
+  clearTimeout(requirementTimer);
+  if (requirementSave) { await requirementSave; if (requirementDirty) return flushRequirements(); return; }
+  if (!requirementDirty) return;
+  requirementSave = (async () => {
+    while (requirementDirty) {
+      requirementDirty = false;
+      try {
+        const result = await api(`/api/runs/${run.id}/requirements`, {method: 'PUT', body: JSON.stringify({requirements: requirementValues(), confirmed: false})});
+        run.requirement_audit = result.requirement_audit; run.reviewed_at = result.reviewed_at;
+        $('requirements-status').textContent = 'Draft saved · awaiting confirmation'; renderProgress();
+      } catch (error) { requirementDirty = true; $('requirements-status').textContent = 'Not saved. Edit to retry.'; throw error; }
+    }
+  })();
+  try { await requirementSave; } finally { requirementSave = null; }
+}
+$('add-requirement').onclick = () => { requirementRow(); scheduleRequirements(); };
+$('confirm-requirements').onclick = perform(async () => {
+  await flushAll();
+  run = await api(`/api/runs/${run.id}/requirements`, {method: 'PUT', body: JSON.stringify({requirements: requirementValues(), confirmed: true})});
+  renderRun(); await refreshCases();
+});
+$('clear-requirements').onclick = perform(async () => {
+  if (!confirm('Clear the instruction requirements and their confirmation? Edit annotations remain.')) return;
+  await flushAll(); run = await api(`/api/runs/${run.id}/requirements`, {method: 'DELETE', body: '{}'});
+  renderRun(); await refreshCases();
+});
 
 $('case-form').addEventListener('input', () => {
   formDirty = true; saveStatus('Unsaved changes…');
@@ -260,23 +333,10 @@ $('case-form').addEventListener('submit', perform(async event => {
     generating = false; $('generate').disabled = false; $('generate').textContent = 'Generate revision';
   }
 }));
-$('suggest-labels').onclick = perform(async () => {
-  if (suggesting) return;
-  await flushAll(); clearMessage(); suggesting = true;
-  $('suggest-labels').textContent = 'Suggesting…';
-  const regions = [document.querySelector('main'), document.querySelector('.sidebar')];
-  regions.forEach(region => { region.inert = true; });
-  try {
-    run = await api(`/api/runs/${run.id}/suggest`, {method: 'POST', body: '{}'});
-    await refreshCases();
-  } finally {
-    suggesting = false; regions.forEach(region => { region.inert = false; }); renderRun();
-  }
-});
 $('confirm-annotation').onclick = perform(async () => {
   $('confirm-annotation').disabled = true;
   try {
-    await flushAnnotation();
+    await flushAll();
     const values = {...annotationValues(), confirmed: true};
     run = await api(`/api/edits/${selectedId}/annotation`, {method: 'PUT', body: JSON.stringify(values)});
     const index = run.edits.findIndex(e => e.id === selectedId);
@@ -291,18 +351,18 @@ $('new-case').onclick = perform(async () => {
   $('case-form').elements.identifier.focus();
 });
 $('delete-annotation').onclick = perform(async () => {
-  await flushAnnotation();
+  await flushAll();
   run = await api(`/api/edits/${selectedId}/annotation`, {method: 'DELETE', body: '{}'});
   annotationDirty = false; renderRun(); await refreshCases();
 });
 $('delete-run').onclick = perform(async () => {
-  if (!confirm('Permanently delete this run, including its revision, suggestions, and annotations? Other runs will remain.')) return;
+  if (!confirm('Permanently delete this run, including its revision and annotations? Other runs will remain.')) return;
   await flushAll();
   await api(`/api/runs/${run.id}`, {method: 'DELETE', body: '{}'});
   await openCase(caseId);
 });
 $('delete-case').onclick = perform(async () => {
-  if (!confirm('Permanently delete this passage and all its runs, suggestions, and annotations? This cannot be undone.')) return;
+  if (!confirm('Permanently delete this passage and all its runs and annotations? This cannot be undone.')) return;
   await flushAll();
   await api(`/api/cases/${caseId}`, {method: 'DELETE', body: '{}'});
   caseId = null; currentCase = null; run = null; selectedId = null;
@@ -311,7 +371,7 @@ $('delete-case').onclick = perform(async () => {
 });
 $('run-select').onchange = perform(async () => {
   const id = $('run-select').value;
-  try { await flushAnnotation(); run = await api(`/api/runs/${id}`); selectedId = null; renderRun(); }
+  try { await flushAll(); run = await api(`/api/runs/${id}`); selectedId = null; renderRun(); }
   catch (error) { $('run-select').value = run?.id || ''; throw error; }
 });
 for (const id of ['acceptability', 'change-type']) $(id).onchange = scheduleAnnotation;
@@ -320,11 +380,11 @@ for (const [id, step] of [['previous-edit', -1], ['next-edit', 1]]) $(id).onclic
   await flushAnnotation(); const index = run.edits.findIndex(e => e.id === selectedId); selectEdit(run.edits[index + step]?.id || selectedId);
 });
 async function regroup(action) {
-  await flushAnnotation();
+  await flushAll();
   const edit = run.edits.find(e => e.id === selectedId);
   const index = run.edits.indexOf(edit);
   const affected = action === 'merge' ? run.edits.slice(index, index + 2) : [edit];
-  if (affected.some(e => e.annotation || e.suggestion) && !confirm('This will clear suggestions and labels on the affected edits. Continue?')) return;
+  if (affected.some(e => e.annotation) && !confirm('This will clear labels on the affected edits. Continue?')) return;
   const data = {action, edit_id: selectedId};
   if (action === 'split') { data.original_cut = Number($('original-cut').value); data.revised_cut = Number($('revised-cut').value); }
   const result = await api(`/api/runs/${run.id}/regroup`, {method: 'POST', body: JSON.stringify(data)});
@@ -342,8 +402,12 @@ $('export').onclick = perform(async () => {
   await flushAll();
   window.location.assign(`/api/export?scope=${$('export-scope').value}`);
 });
+$('export-changes').onclick = perform(async () => {
+  await flushAll();
+  window.location.assign(`/api/runs/${run.id}/export`);
+});
 window.addEventListener('beforeunload', event => {
-  if (formDirty || annotationDirty || formSave || annotationSave || generating || suggesting) { event.preventDefault(); event.returnValue = ''; }
+  if (formDirty || annotationDirty || requirementDirty || requirementSave || formSave || annotationSave || generating) { event.preventDefault(); event.returnValue = ''; }
 });
 (async () => {
   try {

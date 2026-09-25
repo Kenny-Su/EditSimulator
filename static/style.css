@@ -112,9 +112,13 @@ summary { color: #666; }
 .target-sentence { margin: 8px 0; padding-left: 10px; border-left: 2px solid #555; }
 .edit-excerpts > div { min-width: 0; }
 
-#suggestion { border-left: 2px solid #ccc; padding: 8px 12px; margin-bottom: 16px; }
-#suggestion-explanation { margin-top: 4px; }
-#suggestion-split { margin-top: 6px; font-weight: 500; }
-#suggestion-status:not(:empty) { margin-bottom: 12px; }
 .review-toolbar { gap: 8px; flex-wrap: wrap; }
 #progress { margin-right: auto; }
+
+#requirements-panel { border-block: 1px solid #ddd; padding: 14px 0; margin-bottom: 16px; }
+.requirement-row { border-bottom: 1px solid #eee; padding: 12px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.requirement-row label:first-child, .requirement-row label:has(textarea.requirement-explanation), .requirement-row details { grid-column: 1 / -1; }
+.requirement-row select { display: block; width: 100%; }
+.requirement-row details label { font-weight: 400; margin: 6px 0; }
+.requirement-row > button { justify-self: start; }
+#requirements-panel > button { margin-top: 12px; }
