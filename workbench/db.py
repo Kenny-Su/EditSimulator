@@ -23,6 +23,10 @@ def initialize(path):
     with connect(path) as db:
         db.executescript("""
         PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS papers (
+          id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE, xml TEXT NOT NULL,
+          document_json TEXT NOT NULL, filename TEXT NOT NULL, created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS sources (
           id TEXT PRIMARY KEY, identifier TEXT NOT NULL, title TEXT NOT NULL,
           version TEXT NOT NULL, section TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -67,12 +71,20 @@ def initialize(path):
           job_id TEXT NOT NULL REFERENCES suggestion_jobs(id), labels_json TEXT NOT NULL
         );
         """)
+        if "provenance_json" not in {row["name"] for row in db.execute("PRAGMA table_info(cases)")}:
+            db.execute("ALTER TABLE cases ADD COLUMN provenance_json TEXT")
         if "confirmed_at" not in {row["name"] for row in db.execute("PRAGMA table_info(annotations)")}:
             db.execute("ALTER TABLE annotations ADD COLUMN confirmed_at TEXT")
             # Existing complete labels were manually entered before explicit confirmation existed.
             db.execute("UPDATE annotations SET confirmed_at=updated_at WHERE acceptability IS NOT NULL AND change_type IS NOT NULL")
         if "suggestion_job_id" not in {row["name"] for row in db.execute("PRAGMA table_info(annotations)")}:
             db.execute("ALTER TABLE annotations ADD COLUMN suggestion_job_id TEXT REFERENCES suggestion_jobs(id)")
+        # Retain old judgments, but reopen edits that now need a rejection reason.
+        for annotation in db.execute("""SELECT a.edit_id,a.reason,e.run_id FROM annotations a
+                JOIN edit_groups e ON e.id=a.edit_id WHERE a.acceptability='unacceptable'""").fetchall():
+            if not annotation["reason"].strip():
+                db.execute("UPDATE annotations SET confirmed_at=NULL WHERE edit_id=?", (annotation["edit_id"],))
+                db.execute("UPDATE runs SET reviewed_at=NULL WHERE id=?", (annotation["run_id"],))
         db.execute("UPDATE suggestion_jobs SET status='interrupted', error='Suggestion interrupted. Retry explicitly.', updated_at=? WHERE status='pending'", (now(),))
         if "constraints" in {row["name"] for row in db.execute("PRAGMA table_info(cases)")}:
             db.execute("""UPDATE cases SET instruction = CASE WHEN trim(instruction) = ''
@@ -99,7 +111,8 @@ def initialize(path):
 
 
 def annotation_complete(a):
-    return bool(a and a.get("acceptability") and a.get("change_type") and a.get("confirmed_at"))
+    return bool(a and a.get("acceptability") and a.get("change_type") and a.get("confirmed_at")
+                and (a["acceptability"] != "unacceptable" or a.get("reason", "").strip()))
 
 
 def case_record(db, case_id):
@@ -107,6 +120,7 @@ def case_record(db, case_id):
     if not row:
         return None
     case = dict(row)
+    case["provenance"] = json.loads(case.pop("provenance_json") or "null")
     case["source"] = dict(db.execute("SELECT * FROM sources WHERE id=?", (case["source_id"],)).fetchone())
     return case
 
@@ -153,3 +167,14 @@ def add_group(db, run_id, position, span):
         group_id, run_id, position, span["original_start"], span["original_end"],
         span["revised_start"], span["revised_end"], stamp, stamp))
     return group_id
+
+
+def paper_record(db, paper_id, include_xml=False):
+    row = db.execute("SELECT * FROM papers WHERE id=?", (paper_id,)).fetchone()
+    if not row:
+        return None
+    paper = json.loads(row["document_json"])
+    paper.update(id=row["id"], filename=row["filename"], imported_at=row["created_at"])
+    if include_xml:
+        paper["xml"] = row["xml"]
+    return paper

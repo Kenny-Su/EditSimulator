@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, render_template, request
 
-from . import db as storage, diffing, generation, requirements
+from . import db as storage, diffing, generation, requirements, acm_xml
 
 
 def create_app(config=None):
@@ -16,7 +16,7 @@ def create_app(config=None):
         DATABASE=os.getenv("WORKBENCH_DB", str(root / "instance" / "workbench.sqlite3")),
         OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""), OPENAI_MODEL=os.getenv("OPENAI_MODEL", ""),
         OPENAI_BASE_URL=os.getenv("OPENAI_BASE_URL", generation.DEFAULT_BASE_URL),
-        GENERATOR=None, MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+        GENERATOR=None, MAX_CONTENT_LENGTH=12 * 1024 * 1024,
     )
     app.config.update(config or {})
     if app.config["GENERATOR"] is None:
@@ -78,7 +78,17 @@ def create_app(config=None):
             abort(404, description="Run not found.")
         if completed and value["status"] != "completed":
             abort(409, description="Only completed generations can be annotated.")
+        if completed and not value["snapshot"].get("provenance"):
+            abort(409, description="This historical run has no ACM XML source. Import ACM XML to start a new annotation.")
         return value
+
+    def get_paper(paper_id, include_xml=False):
+        if not isinstance(paper_id, str):
+            abort(400, description="Choose an imported ACM paper.")
+        paper = storage.paper_record(db(), paper_id, include_xml)
+        if not paper:
+            abort(404, description="Imported paper not found.")
+        return paper
 
     def display_run(run):
         if run["status"] == "completed":
@@ -126,33 +136,63 @@ def create_app(config=None):
             result.append(case)
         return jsonify(cases=result)
 
+    @app.get("/api/papers")
+    def list_papers():
+        papers = [get_paper(r["id"]) for r in db().execute("SELECT id FROM papers ORDER BY created_at DESC")]
+        return jsonify(papers=[{k: p[k] for k in ("id", "title", "doi", "filename")} for p in papers])
+
+    @app.get("/api/papers/<paper_id>")
+    def read_paper(paper_id):
+        return jsonify(get_paper(paper_id))
+
+    @app.post("/api/papers")
+    def import_paper():
+        data = payload()
+        xml = text_field(data, "xml")
+        try:
+            document = acm_xml.parse(xml)
+        except ValueError as error:
+            abort(400, description=str(error))
+        with db():
+            db().execute("BEGIN IMMEDIATE")
+            existing = db().execute("SELECT id FROM papers WHERE sha256=?", (document["sha256"],)).fetchone()
+            paper_id = existing["id"] if existing else storage.uid()
+            if not existing:
+                db().execute("INSERT INTO papers VALUES (?,?,?,?,?,?)", (
+                    paper_id, document["sha256"], xml, json.dumps(document),
+                    Path(text_field(data, "filename")).name or "article.xml", storage.now()))
+        return jsonify(get_paper(paper_id)), 200 if existing else 201
+
     @app.post("/api/cases")
     def create_case():
         data = payload()
-        fields = {key: text_field(data, key) for key in
-                  ("identifier", "title", "version", "section", "original", "instruction")}
+        if set(data) - {"paper_id", "section_id", "paragraph_ids", "instruction"}:
+            abort(400, description="Source text and metadata must come from imported ACM XML.")
+        paper = get_paper(data.get("paper_id"))
+        try:
+            original, provenance = acm_xml.selection(paper, data)
+        except ValueError as error:
+            abort(400, description=str(error))
+        instruction = text_field(data, "instruction")
         stamp, source_id, case_id = storage.now(), storage.uid(), storage.uid()
         with db():
             db().execute("INSERT INTO sources VALUES (?,?,?,?,?,?,?)", (
-                source_id, fields["identifier"], fields["title"], fields["version"],
-                fields["section"], stamp, stamp))
-            db().execute("INSERT INTO cases VALUES (?,?,?,?,?,?)", (
-                case_id, source_id, fields["original"], fields["instruction"], stamp, stamp))
+                source_id, paper["url"], paper["title"], paper["sha256"], provenance["section_title"], stamp, stamp))
+            db().execute("INSERT INTO cases (id,source_id,original,instruction,created_at,updated_at,provenance_json) VALUES (?,?,?,?,?,?,?)", (
+                case_id, source_id, original, instruction, stamp, stamp, json.dumps(provenance)))
         return jsonify(get_case(case_id)), 201
 
     @app.patch("/api/cases/<case_id>")
     def update_case(case_id):
         case, data = get_case(case_id), payload()
-        stamp = storage.now()
+        if not case["provenance"]:
+            abort(409, description="Historical passages are read-only. Import ACM XML to create a new passage.")
+        if set(data) - {"instruction"}:
+            abort(400, description="Imported text and source metadata are read-only. Create a new passage to change the selection.")
         with db():
-            for key in ("original", "instruction"):
-                if key in data:
-                    db().execute(f"UPDATE cases SET {key}=? WHERE id=?", (text_field(data, key), case_id))
-            for key in ("identifier", "title", "version", "section"):
-                if key in data:
-                    db().execute(f"UPDATE sources SET {key}=?, updated_at=? WHERE id=?",
-                                 (text_field(data, key), stamp, case["source_id"]))
-            db().execute("UPDATE cases SET updated_at=? WHERE id=?", (stamp, case_id))
+            if "instruction" in data:
+                db().execute("UPDATE cases SET instruction=?,updated_at=? WHERE id=?",
+                             (text_field(data, "instruction"), storage.now(), case_id))
         return jsonify(get_case(case_id))
 
     @app.get("/api/cases/<case_id>")
@@ -167,11 +207,14 @@ def create_app(config=None):
     def generate(case_id):
         payload()
         case = get_case(case_id)
+        if not case["provenance"]:
+            abort(409, description="Import ACM XML and select a passage before generating.")
         if not all(value.strip() for value in (case["original"], case["instruction"], case["source"]["identifier"])):
-            abort(400, description="Add a passage, paper URL, and editing instruction before generating.")
+            abort(400, description="Select an ACM passage and add an editing instruction before generating.")
         if not app.config["OPENAI_API_KEY"] or not app.config["OPENAI_MODEL"]:
             abort(400, description="Set OPENAI_API_KEY and OPENAI_MODEL in .env or your shell, then restart the app.")
-        snapshot = {key: case[key] for key in ("original", "instruction", "source")}
+        snapshot = {key: case[key] for key in ("original", "instruction", "source", "provenance")}
+        snapshot["instruction_format"] = "one_request_per_line"
         api_request = generation.build_request(snapshot, app.config["OPENAI_MODEL"])
         stamp, run_id = storage.now(), storage.uid()
         try:
@@ -201,6 +244,8 @@ def create_app(config=None):
                     for position, span in enumerate(diffing.sentence_edits(snapshot["original"], text)):
                         storage.add_group(db(), run_id, position, span)
                     db().execute("UPDATE runs SET grouping_version=1 WHERE id=?", (run_id,))
+                    db().execute("INSERT INTO requirement_audits (run_id,annotation_json,updated_at) VALUES (?,?,?)",
+                                 (run_id, json.dumps(requirements.initial_requirements(snapshot)), storage.now()))
         except Exception as error:
             # Provider exception strings may echo request content or credentials. Store only safe diagnostics.
             code = getattr(error, "status_code", None)
@@ -224,7 +269,13 @@ def create_app(config=None):
                 abort(409, description="Wait for suggestions to finish.")
             stamp = storage.now()
             if request.method == "DELETE":
-                db().execute("DELETE FROM requirement_audits WHERE run_id=?", (run_id,))
+                if run['snapshot'].get('instruction_format') == 'one_request_per_line':
+                    db().execute("""INSERT INTO requirement_audits (run_id,annotation_json,updated_at) VALUES (?,?,?)
+                        ON CONFLICT(run_id) DO UPDATE SET annotation_json=excluded.annotation_json,
+                        confirmed_at=NULL,updated_at=excluded.updated_at""",
+                        (run_id, json.dumps(requirements.initial_requirements(run['snapshot'])), stamp))
+                else:
+                    db().execute("DELETE FROM requirement_audits WHERE run_id=?", (run_id,))
             else:
                 rows = data.get("requirements")
                 try:
@@ -246,6 +297,7 @@ def create_app(config=None):
             abort(404, description="Edit not found. It may have been regrouped.")
         get_run(group["run_id"], completed=True)
         acceptability, change_type = data.get("acceptability"), data.get("change_type")
+        reason = text_field(data, "reason")
         dimensions = data.get("dimensions", [])
         if acceptability not in (None, "acceptable", "unacceptable", "uncertain"):
             abort(400, description="Invalid acceptability label.")
@@ -259,18 +311,21 @@ def create_app(config=None):
         confirmed = data.get("confirmed") is True
         if confirmed and not (acceptability and change_type):
             abort(400, description="Choose both labels before confirming.")
+        if confirmed and acceptability == "unacceptable" and not reason.strip():
+            abort(400, description="Add a short reason before confirming an unacceptable edit.")
         if data.get("suggestion_job_id") is not None:
             abort(400, description="Annotations must be entered manually.")
         job_id = None
         stamp = storage.now()
         with db():
             db().execute("""INSERT INTO annotations
-                (edit_id, acceptability, change_type, dimensions_json, created_at, updated_at, confirmed_at, suggestion_job_id)
-                VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(edit_id) DO UPDATE SET
+                (edit_id, acceptability, change_type, dimensions_json, reason, created_at, updated_at, confirmed_at, suggestion_job_id)
+                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(edit_id) DO UPDATE SET
                 acceptability=excluded.acceptability, change_type=excluded.change_type,
+                reason=excluded.reason,
                 dimensions_json=excluded.dimensions_json, updated_at=excluded.updated_at,
                 confirmed_at=excluded.confirmed_at, suggestion_job_id=excluded.suggestion_job_id""",
-                (edit_id, acceptability, change_type, json.dumps(list(dict.fromkeys(dimensions))), stamp, stamp, stamp if confirmed else None, job_id))
+                (edit_id, acceptability, change_type, json.dumps(list(dict.fromkeys(dimensions))), reason, stamp, stamp, stamp if confirmed else None, job_id))
             db().execute("UPDATE runs SET reviewed_at=NULL, updated_at=? WHERE id=?", (stamp, group["run_id"]))
         return jsonify(display_run(get_run(group["run_id"])))
 
@@ -282,6 +337,7 @@ def create_app(config=None):
             group = db().execute("SELECT run_id FROM edit_groups WHERE id=?", (edit_id,)).fetchone()
             if not group:
                 abort(404, description="Edit not found.")
+            get_run(group["run_id"], completed=True)
             db().execute("DELETE FROM annotations WHERE edit_id=?", (edit_id,))
             db().execute("UPDATE runs SET reviewed_at=NULL, updated_at=? WHERE id=?",
                          (storage.now(), group["run_id"]))
@@ -354,6 +410,8 @@ def create_app(config=None):
                 removed_ids = {e["id"] for e in removed}
                 for row in rows or []:
                     row["edit_ids"] = [i for i in row.get("edit_ids", []) if i not in removed_ids]
+                    if row.get("mapping_mode") == "edit_list" and row["kind"] == "request":
+                        row["outcome"] = "fulfilled" if row["edit_ids"] else "not_fulfilled"
                 db().execute("UPDATE requirement_audits SET suggestion_json=NULL,annotation_json=?,confirmed_at=NULL,updated_at=? WHERE run_id=?",
                              (json.dumps(rows or []), storage.now(), run_id))
             for old in removed:
@@ -401,6 +459,7 @@ def create_app(config=None):
                 **{key: run[key] for key in ("id", "case_id", "status", "model", "created_at", "snapshot",
                                            "revised", "request", "response_id", "response")},
                 "changes": changes,
+                "paper": get_paper(run["snapshot"]["provenance"]["paper_id"], True) if run["snapshot"].get("provenance") else None,
             }
         response = jsonify(result)
         response.headers["Content-Disposition"] = f'attachment; filename="llm-proposed-changes-{run["id"]}.json"'
@@ -416,12 +475,15 @@ def create_app(config=None):
                 case = get_case(row["id"])
                 runs = [get_run(r["id"]) for r in db().execute(
                     "SELECT id FROM runs WHERE case_id=? ORDER BY created_at", (case["id"],))]
-                case["runs"] = [r for r in runs if r["reviewed_at"] and r["requirement_audit"] and r["requirement_audit"]["confirmed_at"]] if reviewed_only else runs
+                case["runs"] = [r for r in runs if r["reviewed_at"] and r["requirement_audit"] and r["requirement_audit"]["confirmed_at"] and all(e["complete"] for e in r["edits"])] if reviewed_only else runs
                 if not reviewed_only or case["runs"]:
                     cases.append(case)
-        result = {"schema_version": 3, "exported_at": storage.now(),
+            paper_ids = {c["provenance"]["paper_id"] for c in cases if c["provenance"]}
+            paper_ids.update(r["snapshot"]["provenance"]["paper_id"] for c in cases for r in c["runs"] if r["snapshot"].get("provenance"))
+            papers = [get_paper(pid, True) for pid in sorted(paper_ids)]
+        result = {"schema_version": 4, "exported_at": storage.now(),
                   "span_convention": "half-open Unicode code-point offsets into immutable run snapshot.original and run.revised",
-                  "scope": "reviewed" if reviewed_only else "all", "cases": cases}
+                  "scope": "reviewed" if reviewed_only else "all", "cases": cases, "papers": papers}
         response = jsonify(result)
         response.headers["Content-Disposition"] = 'attachment; filename="edit-workbench-' + result["scope"] + '.json"'
         return response

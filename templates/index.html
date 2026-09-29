@@ -22,16 +22,34 @@
     <div id="message" role="alert" hidden></div>
     <section class="card input-card">
       <div class="section-head"><h2 id="case-heading">Passage</h2><div><span id="save-status" role="status">Not saved yet</span> <button id="delete-case" hidden>Delete passage</button></div></div>
-      <form id="case-form">
-        <div class="source-grid">
-          <label>URL <span class="required">*</span><input type="url" name="identifier" placeholder="https://arxiv.org/abs/2401.01234" required></label>
-          <label>Paper title <span class="optional">optional</span><input name="title" placeholder="Paper title"></label>
+      <section id="import-panel" aria-label="Import ACM paper">
+        <h3>Choose a passage from ACM Digital Library</h3>
+        <p class="muted">Upload the full-text XML downloaded from ACM DL, then select a section and paragraphs.</p>
+        <label>ACM XML file (up to 10 MB)<input id="xml-file" type="file" accept=".xml,application/xml,text/xml"></label>
+        <p id="import-status" class="muted" role="status"></p>
+        <label>Imported paper<select id="paper-select"><option value="">Choose a paper…</option></select></label>
+        <div id="paper-selection" hidden>
+          <p id="paper-title"></p><a id="paper-link" target="_blank" rel="noopener noreferrer">View in ACM DL</a>
+          <label>Section<select id="section-select"></select></label>
+          <p class="muted">Select paragraphs below. Sections include their subsections. Figures, captions, and tables are excluded; citations and lists are preserved as text.</p>
+          <div class="selection-actions"><button id="select-all">Select all paragraphs</button><button id="select-none">Clear selection</button></div>
+          <div id="paragraph-list" aria-label="Source paragraphs"></div>
+          <details open><summary>Selected passage preview</summary><div id="selection-preview" class="passage source-preview"></div></details>
+          <p id="selection-count" class="muted"></p>
+          <button id="use-selection" class="primary" disabled>Use selected passage</button>
         </div>
-        <label>Original passage <span class="required">*</span><textarea name="original" rows="5" placeholder="Paste a passage." required></textarea></label>
+      </section>
+      <div id="source-summary" hidden>
+        <h3 id="source-title"></h3><p id="source-url" class="muted"></p><p id="source-section" class="muted"></p>
+        <p id="legacy-note" class="muted" hidden>Historical passage: viewing and export only. Choose New passage to import an ACM XML source.</p>
+        <details open><summary>Original passage</summary><div id="source-passage" class="passage source-preview"></div></details>
+      </div>
+      <form id="case-form" hidden>
         <div class="instruction-grid">
-          <label>Editing instruction <span class="required">*</span><textarea name="instruction" rows="3" placeholder="Make this passage more concise. Preserve numbers and hedging." required></textarea></label>
+          <label>Editing instruction · one request per line <span class="required">*</span><textarea name="instruction" rows="4" aria-describedby="instruction-help" placeholder="Make this passage more concise.&#10;Preserve all numbers.&#10;Preserve hedging." required></textarea></label>
+          <p id="instruction-help" class="muted">Put each request or prohibition on its own line. Each nonempty line becomes one clause to annotate; periods do not split requests.</p>
         </div>
-        <div class="form-bottom"><p id="configuration-note" class="muted"></p><button type="submit" id="generate" class="primary">Generate revision</button></div>
+        <div class="form-bottom"><p id="configuration-note" class="muted"></p><button type="submit" id="generate" class="primary" disabled>Generate revision</button></div>
       </form>
     </section>
     <section class="card review-card" id="review-section">
@@ -41,15 +59,16 @@
         <div class="run-context"><span class="eyebrow">Instruction</span><p id="run-instruction"></p></div>
         <div id="run-info" class="muted"></div>
         <div id="run-error" role="status" hidden></div>
+        <p id="legacy-run-note" class="muted" hidden>This historical run is read-only because it has no imported ACM XML source.</p>
         <div id="completed-review" hidden>
           <div class="review-toolbar"><span id="progress"></span><button id="mark-reviewed">Mark reviewed ✓</button></div>
           <section id="requirements-panel">
-            <div class="section-head"><h3>Instruction requirements</h3></div>
-            <p class="muted">Check every clause, including requests that produced no edit. Quote the instruction exactly. Linked edits are supporting evidence or offending changes.</p>
+            <div class="section-head"><h3>Instruction clauses → edits</h3></div>
+            <p id="clause-help" class="muted">Add each request as an exact quote from the instruction, then select the edits that fulfill it. An empty list means the request was omitted. For “do not” clauses, select Prohibition to record violations separately.</p>
             <div id="requirement-list"></div>
-            <button id="add-requirement">Add requirement</button>
-            <button id="confirm-requirements">Confirm requirements</button>
-            <button id="clear-requirements">Clear requirements</button>
+            <button id="add-requirement">Add clause</button>
+            <button id="confirm-requirements">Confirm clause mappings</button>
+            <button id="clear-requirements">Clear clauses</button>
             <p id="requirements-status" class="muted" role="status"></p>
           </section>
           <details class="full-passage"><summary>Full passage</summary><div class="passages"><section><h3>Original</h3><div id="original-view" class="passage"></div></section><section><h3>Revision</h3><div id="revised-view" class="passage"></div></section></div></details>
@@ -63,6 +82,10 @@
                   <label>Acceptability<select id="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option><option value="uncertain">Uncertain</option></select></label>
                   <label>What changed?<select id="change-type"><option value="">Choose a type…</option><option value="wording_only">Wording only</option><option value="fidelity_relevant">Fidelity relevant</option><option value="uncertain">Uncertain</option></select></label>
                 </div>
+                <label id="reason-field" hidden>Why is this edit unacceptable? <span class="required">*</span>
+                  <textarea id="annotation-reason" rows="3" placeholder="Briefly explain what makes this edit unacceptable." aria-describedby="reason-help"></textarea>
+                  <span id="reason-help" class="muted">Required before confirming an unacceptable edit.</span>
+                </label>
                 <fieldset id="dimensions" hidden><legend>Fidelity dimensions <span class="optional">optional</span></legend><div class="checks">
                   <label><input type="checkbox" value="certainty">Certainty</label><label><input type="checkbox" value="precision">Precision</label><label><input type="checkbox" value="scope">Scope</label><label><input type="checkbox" value="emphasis">Emphasis</label><label><input type="checkbox" value="other">Other</label>
                 </div></fieldset>
