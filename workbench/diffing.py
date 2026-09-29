@@ -38,6 +38,29 @@ def segments(text, groups, side):
     return result
 
 
+def unified_segments(original, revised, groups):
+    """Full passage with unchanged text once and token-level removals/additions."""
+    result, cursor = [], 0
+    for group in groups:
+        start, end = group['original_start'], group['original_end']
+        if start > cursor:
+            result.append(dict(text=original[cursor:start], kind='equal', edit_id=None))
+        before = tokens(original[start:end])
+        after = tokens(revised[group['revised_start']:group['revised_end']])
+        for tag, i, j, k, l in SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
+            if tag == 'equal':
+                result.append(dict(text=''.join(before[i:j]), kind='equal', edit_id=group['id']))
+            else:
+                if i < j:
+                    result.append(dict(text=''.join(before[i:j]), kind='delete', edit_id=group['id']))
+                if k < l:
+                    result.append(dict(text=''.join(after[k:l]), kind='insert', edit_id=group['id']))
+        cursor = end
+    if cursor < len(original):
+        result.append(dict(text=original[cursor:], kind='equal', edit_id=None))
+    return result
+
+
 def split_spans(original, revised, group, original_cut, revised_cut):
     cuts = {"original": original_cut, "revised": revised_cut}
     texts = {"original": original, "revised": revised}

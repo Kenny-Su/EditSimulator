@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let paper = null, importing = false;
 let caseId = null, currentCase = null, run = null, selectedId = null;
 let formDirty = false, annotationDirty = false, formSave = null, annotationSave = null;
+const annotationDrafts = new Map();
 let requirementDirty = false, requirementSave = null, requirementTimer;
 let formTimer, annotationTimer, generating = false, config = {};
 
@@ -36,7 +37,7 @@ async function refreshCases() {
     status.textContent = !latest ? 'Draft' : latest.reviewed_at ? '✓ Reviewed' : latest.status === 'completed'
       ? `${latest.labeled_count} / ${latest.edit_count} edits confirmed` : latest.status;
     button.append(title, source, status);
-    button.onclick = perform(async () => { await flushAll(); await openCase(item.id); });
+    button.onclick = perform(() => withReviewLocked(async () => { await flushAll(); await openCase(item.id); }));
     $('case-list').append(button);
   }
 }
@@ -67,29 +68,41 @@ async function flushForm() {
   await refreshCases();
 }
 
-function annotationValues() {
-  return {acceptability: $('acceptability').value || null, change_type: $('change-type').value || null,
-    reason: $('annotation-reason').value,
-    dimensions: [...$('dimensions').querySelectorAll('input:checked')].map(input => input.value),
+const editCard = id => document.getElementById(`edit-card-${id}`);
+const cardField = (id, name) => editCard(id).querySelector(`[data-field="${name}"]`);
+function annotationValues(id) {
+  return {acceptability: cardField(id, 'acceptability').value || null,
+    change_type: cardField(id, 'change-type').value || null,
+    reason: cardField(id, 'annotation-reason').value,
+    dimensions: [...cardField(id, 'dimensions').querySelectorAll('input:checked')].map(input => input.value),
     confirmed: false};
 }
-
+function applyAnnotationResult(result, id) {
+  // Only replace this edit: another card or the clause checklist may have newer drafts.
+  const index = run.edits.findIndex(edit => edit.id === id);
+  run.edits[index] = result.edits.find(edit => edit.id === id);
+  run.reviewed_at = result.reviewed_at;
+  run.labeled_count = run.edits.filter(edit => edit.complete && !annotationDrafts.has(edit.id)).length;
+}
 async function flushAnnotation() {
   clearTimeout(annotationTimer);
-  if (annotationSave) { await annotationSave; if (annotationDirty) return flushAnnotation(); return; }
-  if (!annotationDirty || !selectedId) return;
+  if (annotationSave) { await annotationSave; if (annotationDrafts.size) return flushAnnotation(); return; }
+  if (!annotationDrafts.size) return;
   annotationSave = (async () => {
-    while (annotationDirty) {
-      annotationDirty = false;
-      $('annotation-status').textContent = 'Saving…';
-      $('annotation-status').classList.remove('error-text');
+    while (annotationDrafts.size) {
+      const [id, values] = annotationDrafts.entries().next().value;
+      const status = cardField(id, 'annotation-status');
+      status.textContent = 'Saving…'; status.classList.remove('error-text');
       try {
-        run = await api(`/api/edits/${selectedId}/annotation`, {method: 'PUT', body: JSON.stringify(annotationValues())});
-        renderProgress(); renderEditList(); updateAnnotationStatus();
+        const result = await api(`/api/edits/${id}/annotation`, {method: 'PUT', body: JSON.stringify(values)});
+        // Keep any newer input typed while this request was in flight.
+        if (annotationDrafts.get(id) === values) annotationDrafts.delete(id);
+        annotationDirty = annotationDrafts.size > 0;
+        applyAnnotationResult(result, id);
+        renderProgress(); renderEditList(); updateAnnotationStatus(id);
       } catch (error) {
-        annotationDirty = true;
-        $('annotation-status').textContent = 'Not saved. Edit again to retry; keep this page open.';
-        $('annotation-status').classList.add('error-text'); throw error;
+        status.textContent = 'Not saved. Edit again to retry; keep this page open.';
+        status.classList.add('error-text'); throw error;
       }
     }
   })();
@@ -133,20 +146,8 @@ function renderRun() {
   if (run.status !== 'completed') return;
   $('legacy-run-note').hidden = !!run.snapshot.provenance;
   if (!run.edits.some(e => e.id === selectedId)) selectedId = run.edits[0]?.id || null;
-  for (const side of ['original', 'revised']) {
-    const view = $(`${side}-view`); view.replaceChildren(); view.className = `passage ${side}`;
-    for (const segment of run.segments[side]) {
-      if (!segment.edit_id) { view.append(document.createTextNode(segment.text)); continue; }
-      const button = document.createElement('button');
-      button.className = 'diff' + (!segment.text ? ' empty-span' : '');
-      button.dataset.editId = segment.edit_id;
-      button.textContent = segment.text || '∅';
-      button.title = 'Select edit';
-      button.onclick = perform(async () => { await flushAnnotation(); selectEdit(segment.edit_id); });
-      view.append(button);
-    }
-  }
-  renderRequirements(); renderProgress(); renderEditList(); selectEdit(selectedId);
+  renderUnifiedPassage();
+  renderRequirements(); renderProgress(); renderEditList(); renderEditCards();
   lockLegacyReview();
 }
 function renderProgress() {
@@ -161,77 +162,125 @@ function renderEditList() {
   $('edit-list').replaceChildren();
   for (const [index, edit] of run.edits.entries()) {
     const button = document.createElement('button'); button.className = 'edit-item' + (edit.id === selectedId ? ' selected' : '');
-    button.textContent = `${edit.complete ? '✓' : '○'} Edit ${index + 1}`;
+    button.textContent = `${edit.complete && !annotationDrafts.has(edit.id) ? '✓' : '○'} Edit ${index + 1}`;
     const preview = document.createElement('span'); preview.className = 'edit-preview';
     preview.textContent = `${edit.original_text || '∅'} → ${edit.revised_text || '∅'}`;
     button.append(preview);
-    button.onclick = perform(async () => { await flushAnnotation(); selectEdit(edit.id); });
+    button.onclick = () => selectEdit(edit.id);
     $('edit-list').append(button);
   }
 }
-function selectEdit(id) {
+function renderUnifiedPassage() {
+  const view = $('unified-view'); view.replaceChildren();
+  let currentId = null, target = view;
+  for (const segment of run.unified_segments) {
+    if (!segment.edit_id) {
+      view.append(document.createTextNode(segment.text)); currentId = null; target = view;
+      continue;
+    }
+    if (segment.edit_id !== currentId) {
+      currentId = segment.edit_id;
+      const index = run.edits.findIndex(edit => edit.id === currentId);
+      const id = currentId;
+      const button = document.createElement('button');
+      button.className = 'unified-edit'; button.dataset.editId = id;
+      button.classList.toggle('selected', id === selectedId);
+      button.title = `Annotate edit ${index + 1}`;
+      button.setAttribute('aria-label', `Edit ${index + 1}: ${run.edits[index].original_text || 'insertion'} → ${run.edits[index].revised_text || 'deletion'}`);
+      const badge = document.createElement('sup'); badge.className = 'edit-number'; badge.textContent = index + 1; badge.setAttribute('aria-hidden', 'true');
+      button.append(badge); button.onclick = () => selectEdit(id);
+      view.append(button); target = button;
+    }
+    const span = document.createElement(segment.kind === 'delete' ? 'del' : segment.kind === 'insert' ? 'ins' : 'span');
+    span.textContent = segment.text; target.append(span);
+  }
+}
+function selectEdit(id, showPassage = false) {
   selectedId = id;
-  const edit = run?.edits.find(e => e.id === id);
-  $('edit-controls').hidden = !edit; $('no-edit').hidden = !!edit;
-  if (!edit) return;
-  const index = run.edits.indexOf(edit);
-  $('edit-title').textContent = `Edit ${index + 1} of ${run.edits.length}`;
-  renderSentenceContext($('edit-before'), edit, 'original');
-  renderSentenceContext($('edit-after'), edit, 'revised');
-  const labels = edit.annotation;
-  $('acceptability').value = labels?.acceptability || '';
-  $('change-type').value = labels?.change_type || '';
-  $('annotation-reason').value = labels?.reason || '';
-  for (const checkbox of $('dimensions').querySelectorAll('input')) checkbox.checked = labels?.dimensions.includes(checkbox.value) || false;
-  $('previous-edit').disabled = index === 0; $('next-edit').disabled = index === run.edits.length - 1;
-  $('merge-next').disabled = index === run.edits.length - 1;
-  for (const side of ['original', 'revised']) {
-    const select = $(`${side}-cut`); select.replaceChildren();
-    for (const boundary of edit[`${side}_boundaries`]) select.append(new Option(boundary.label, boundary.offset));
-    select.selectedIndex = Math.floor((select.options.length - 1) / 2);
+  for (const card of document.querySelectorAll('.edit-card')) card.classList.toggle('selected', card.dataset.editId === id);
+  for (const button of document.querySelectorAll('.unified-edit')) button.classList.toggle('selected', button.dataset.editId === id);
+  renderEditList();
+  const target = showPassage ? [...$('unified-view').querySelectorAll('.unified-edit')].find(button => button.dataset.editId === id) : editCard(id);
+  target?.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  target?.focus({preventScroll: true});
+}
+function renderEditCards() {
+  $('edit-cards').replaceChildren();
+  $('no-edit').hidden = run.edits.length > 0;
+  for (const [index, edit] of run.edits.entries()) {
+    const card = $('edit-card-template').content.firstElementChild.cloneNode(true);
+    card.id = `edit-card-${edit.id}`; card.dataset.editId = edit.id;
+    card.classList.toggle('selected', edit.id === selectedId);
+    $('edit-cards').append(card);
+    const field = name => cardField(edit.id, name);
+    field('edit-title').textContent = `Edit ${index + 1} of ${run.edits.length}`;
+    field('edit-title').id = `edit-title-${edit.id}`; card.setAttribute('aria-labelledby', field('edit-title').id);
+    field('reason-help').id = `reason-help-${edit.id}`;
+    field('annotation-reason').setAttribute('aria-describedby', field('reason-help').id);
+    field('show-in-passage').onclick = () => selectEdit(edit.id, true);
+    const labels = annotationDrafts.get(edit.id) || edit.annotation;
+    field('acceptability').value = labels?.acceptability || '';
+    field('change-type').value = labels?.change_type || '';
+    field('annotation-reason').value = labels?.reason || '';
+    for (const checkbox of field('dimensions').querySelectorAll('input')) checkbox.checked = labels?.dimensions?.includes(checkbox.value) || false;
+    field('merge-next').disabled = index === run.edits.length - 1;
+    for (const side of ['original', 'revised']) {
+      const select = field(`${side}-cut`);
+      for (const boundary of edit[`${side}_boundaries`]) select.append(new Option(boundary.label, boundary.offset));
+      select.selectedIndex = Math.floor((select.options.length - 1) / 2);
+    }
+    for (const name of ['acceptability', 'change-type', 'dimensions']) field(name).onchange = () => scheduleAnnotation(edit.id);
+    field('annotation-reason').oninput = () => scheduleAnnotation(edit.id);
+    field('confirm-annotation').onclick = perform(() => confirmAnnotation(edit.id));
+    field('delete-annotation').onclick = perform(() => clearAnnotation(edit.id));
+    field('merge-next').onclick = perform(() => regroup('merge', edit.id));
+    field('split-edit').onclick = perform(() => regroup('split', edit.id));
+    updateLabelVisibility(edit.id); updateAnnotationStatus(edit.id);
   }
-  $('grouping').open = false;
-  document.querySelectorAll('.diff').forEach(button => button.classList.toggle('selected', button.dataset.editId === id));
-  renderEditList(); updateLabelVisibility(); updateAnnotationStatus();
-  lockLegacyReview();
 }
-function renderSentenceContext(container, edit, side) {
-  container.replaceChildren();
-  const context = edit[`${side}_context`];
-  const before = document.createElement('div'); before.className = 'neighbor'; before.textContent = context.before;
-  const target = document.createElement('div'); target.className = 'target-sentence';
-  for (const segment of edit[`${side}_segments`]) {
-    const span = document.createElement('span');
-    if (segment.edit_id) span.className = 'diff';
-    span.textContent = segment.text || (segment.edit_id ? '∅' : '');
-    target.append(span);
-  }
-  if (!edit[`${side}_text`]) target.textContent = side === 'original' ? '(Inserted sentence)' : '(Deleted sentence)';
-  const after = document.createElement('div'); after.className = 'neighbor'; after.textContent = context.after;
-  container.append(before, target, after);
+function updateLabelVisibility(id) {
+  cardField(id, 'dimensions').hidden = cardField(id, 'change-type').value !== 'fidelity_relevant';
+  const needsReason = cardField(id, 'acceptability').value === 'unacceptable';
+  cardField(id, 'reason-field').hidden = !needsReason;
+  cardField(id, 'annotation-reason').required = needsReason;
 }
-
-function updateLabelVisibility() {
-  $('dimensions').hidden = $('change-type').value !== 'fidelity_relevant';
-  const needsReason = $('acceptability').value === 'unacceptable';
-  $('reason-field').hidden = !needsReason;
-  $('annotation-reason').required = needsReason;
-}
-function updateAnnotationStatus() {
-  const edit = run.edits.find(e => e.id === selectedId);
-  $('delete-annotation').hidden = !edit?.annotation && !annotationDirty;
-  $('annotation-status').textContent = edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
+function updateAnnotationStatus(id) {
+  const edit = run.edits.find(e => e.id === id);
+  const dirty = annotationDrafts.has(id);
+  cardField(id, 'delete-annotation').hidden = !edit?.annotation && !dirty;
+  const status = cardField(id, 'annotation-status');
+  status.textContent = dirty ? 'Unsaved changes…' : edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
     'Draft saved · confirm when ready' : 'Choose labels, then confirm.';
-  const missingReason = $('acceptability').value === 'unacceptable' && !$('annotation-reason').value.trim();
-  $('confirm-annotation').disabled = !$('acceptability').value || !$('change-type').value || missingReason;
-  if (missingReason) $('annotation-status').textContent = 'Add a short reason before confirming this unacceptable edit.';
-  $('confirm-annotation').textContent = run.edits.at(-1)?.id === selectedId ? 'Confirm' : 'Confirm & next';
+  const missingReason = cardField(id, 'acceptability').value === 'unacceptable' && !cardField(id, 'annotation-reason').value.trim();
+  cardField(id, 'confirm-annotation').disabled = !run.snapshot.provenance || !cardField(id, 'acceptability').value || !cardField(id, 'change-type').value || missingReason;
+  if (missingReason) status.textContent = 'Add a short reason before confirming this unacceptable edit.';
 }
-function scheduleAnnotation() {
-  annotationDirty = true; updateLabelVisibility(); updateAnnotationStatus();
+function scheduleAnnotation(id) {
+  annotationDrafts.set(id, annotationValues(id)); annotationDirty = true;
+  updateLabelVisibility(id); updateAnnotationStatus(id); renderEditList();
   $('mark-reviewed').disabled = true;
-  $('annotation-status').textContent = 'Unsaved changes…';
   clearTimeout(annotationTimer); annotationTimer = setTimeout(() => flushAnnotation().catch(message), 450);
+}
+async function withReviewLocked(action) {
+  const regions = [$('review-section'), document.querySelector('.sidebar'), $('case-form'), document.querySelector('.export-tools')];
+  regions.forEach(region => { region.inert = true; });
+  try { await action(); } finally { regions.forEach(region => { region.inert = false; }); }
+}
+async function confirmAnnotation(id) {
+  await withReviewLocked(async () => {
+    await flushAll();
+    const result = await api(`/api/edits/${id}/annotation`, {method: 'PUT', body: JSON.stringify({...annotationValues(id), confirmed: true})});
+    applyAnnotationResult(result, id);
+    updateAnnotationStatus(id); renderProgress(); renderEditList(); await refreshCases();
+  });
+}
+async function clearAnnotation(id) {
+  await withReviewLocked(async () => {
+    await flushAll();
+    const result = await api(`/api/edits/${id}/annotation`, {method: 'DELETE', body: '{}'});
+    applyAnnotationResult(result, id);
+    renderEditCards(); lockLegacyReview(); renderProgress(); renderEditList(); await refreshCases();
+  });
 }
 
 const outcomes = {
@@ -343,31 +392,27 @@ async function flushRequirements() {
   try { await requirementSave; } finally { requirementSave = null; }
 }
 $('add-requirement').onclick = () => { requirementRow(); scheduleRequirements(); };
-$('confirm-requirements').onclick = perform(async () => {
+$('confirm-requirements').onclick = perform(() => withReviewLocked(async () => {
   await flushAll();
   run = await api(`/api/runs/${run.id}/requirements`, {method: 'PUT', body: JSON.stringify({requirements: requirementValues(), confirmed: true})});
   renderRun(); await refreshCases();
-});
-$('clear-requirements').onclick = perform(async () => {
+}));
+$('clear-requirements').onclick = perform(() => withReviewLocked(async () => {
   const prompt = run.snapshot.instruction_format === 'one_request_per_line'
     ? 'Reset all clause mappings, types, notes, and confirmation? The instruction lines and edit annotations remain.'
     : 'Clear the instruction requirements and their confirmation? Edit annotations remain.';
   if (!confirm(prompt)) return;
   await flushAll(); run = await api(`/api/runs/${run.id}/requirements`, {method: 'DELETE', body: '{}'});
   renderRun(); await refreshCases();
-});
+}));
 
 function lockLegacyReview() {
   const legacy = !run?.snapshot.provenance;
-  $('annotation-reason').disabled = legacy;
-  // Keep navigation and full text available while preventing historical edits.
-  for (const element of document.querySelectorAll('#requirements-panel input, #requirements-panel textarea, #requirements-panel select, #requirements-panel button, #edit-controls .label-grid select, #dimensions input')) element.disabled = legacy;
+  for (const element of document.querySelectorAll('#requirements-panel input, #requirements-panel textarea, #requirements-panel select, #requirements-panel button')) element.disabled = legacy;
   if (legacy) {
-    for (const id of ['confirm-annotation', 'delete-annotation', 'merge-next', 'split-edit', 'mark-reviewed']) $(id).disabled = true;
-  } else {
-    $('delete-annotation').disabled = false; $('split-edit').disabled = false;
-    $('clear-requirements').disabled = !run.requirement_audit;
-  }
+    for (const element of document.querySelectorAll('.edit-card input, .edit-card textarea, .edit-card select, .edit-card button:not([data-field="show-in-passage"])')) element.disabled = true;
+    $('mark-reviewed').disabled = true;
+  } else $('clear-requirements').disabled = !run.requirement_audit;
 }
 function renderSource() {
   $('import-panel').hidden = !!caseId;
@@ -492,27 +537,11 @@ $('case-form').addEventListener('submit', perform(async event => {
     generating = false; $('generate').disabled = !currentCase?.provenance || !config.generation_ready; $('generate').textContent = 'Generate revision';
   }
 }));
-$('confirm-annotation').onclick = perform(async () => {
-  $('confirm-annotation').disabled = true;
-  try {
-    await flushAll();
-    const values = {...annotationValues(), confirmed: true};
-    run = await api(`/api/edits/${selectedId}/annotation`, {method: 'PUT', body: JSON.stringify(values)});
-    const index = run.edits.findIndex(e => e.id === selectedId);
-    selectedId = run.edits[index + 1]?.id || selectedId;
-    renderRun(); await refreshCases();
-  } finally { updateAnnotationStatus(); }
-});
 $('new-case').onclick = perform(async () => {
   await flushAll(); clearMessage(); caseId = null; currentCase = null; run = null; selectedId = null;
   $('case-form').reset(); history.replaceState(null, '', '/'); $('case-heading').textContent = 'Passage';
   saveStatus('Not saved yet'); setRunOptions([]); renderRun(); renderSource(); await refreshCases();
   renderSource(); await refreshPapers(); $('xml-file').focus();
-});
-$('delete-annotation').onclick = perform(async () => {
-  await flushAll();
-  run = await api(`/api/edits/${selectedId}/annotation`, {method: 'DELETE', body: '{}'});
-  annotationDirty = false; renderRun(); await refreshCases();
 });
 $('delete-run').onclick = perform(async () => {
   if (!confirm('Permanently delete this run, including its revision and annotations? Other runs will remain.')) return;
@@ -528,30 +557,24 @@ $('delete-case').onclick = perform(async () => {
   $('case-form').reset(); history.replaceState(null, '', '/');
   saveStatus('Not saved yet'); setRunOptions([]); renderRun(); renderSource(); await refreshCases();
 });
-$('run-select').onchange = perform(async () => {
+$('run-select').onchange = perform(() => withReviewLocked(async () => {
   const id = $('run-select').value;
   try { await flushAll(); run = await api(`/api/runs/${id}`); selectedId = null; renderRun(); }
   catch (error) { $('run-select').value = run?.id || ''; throw error; }
-});
-for (const id of ['acceptability', 'change-type']) $(id).onchange = scheduleAnnotation;
-$('annotation-reason').oninput = scheduleAnnotation;
-$('dimensions').onchange = scheduleAnnotation;
-for (const [id, step] of [['previous-edit', -1], ['next-edit', 1]]) $(id).onclick = perform(async () => {
-  await flushAnnotation(); const index = run.edits.findIndex(e => e.id === selectedId); selectEdit(run.edits[index + step]?.id || selectedId);
-});
-async function regroup(action) {
-  await flushAll();
-  const edit = run.edits.find(e => e.id === selectedId);
-  const index = run.edits.indexOf(edit);
-  const affected = action === 'merge' ? run.edits.slice(index, index + 2) : [edit];
-  if (affected.some(e => e.annotation) && !confirm('This will clear labels on the affected edits. Continue?')) return;
-  const data = {action, edit_id: selectedId};
-  if (action === 'split') { data.original_cut = Number($('original-cut').value); data.revised_cut = Number($('revised-cut').value); }
-  const result = await api(`/api/runs/${run.id}/regroup`, {method: 'POST', body: JSON.stringify(data)});
-  run = result.run; selectedId = result.selected_edit_id; renderRun(); await refreshCases();
+}));
+async function regroup(action, id) {
+  await withReviewLocked(async () => {
+    await flushAll();
+    const edit = run.edits.find(e => e.id === id);
+    const index = run.edits.indexOf(edit);
+    const affected = action === 'merge' ? run.edits.slice(index, index + 2) : [edit];
+    if (affected.some(e => e.annotation) && !confirm('This will clear labels on the affected edits. Continue?')) return;
+    const data = {action, edit_id: id};
+    if (action === 'split') { data.original_cut = Number(cardField(id, 'original-cut').value); data.revised_cut = Number(cardField(id, 'revised-cut').value); }
+    const result = await api(`/api/runs/${run.id}/regroup`, {method: 'POST', body: JSON.stringify(data)});
+    run = result.run; selectedId = result.selected_edit_id; renderRun(); selectEdit(selectedId); await refreshCases();
+  });
 }
-$('merge-next').onclick = perform(() => regroup('merge'));
-$('split-edit').onclick = perform(() => regroup('split'));
 $('mark-reviewed').onclick = perform(async () => {
   await flushAll();
   if (!run.edits.length && !confirm('Confirm you reviewed this revision and it contains no changes.')) return;

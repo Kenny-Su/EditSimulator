@@ -93,6 +93,7 @@ def create_app(config=None):
     def display_run(run):
         if run["status"] == "completed":
             original, revised = run["snapshot"]["original"], run["revised"]
+            run["unified_segments"] = diffing.unified_segments(original, revised, run["edits"])
             run["segments"] = {"original": diffing.segments(original, run["edits"], "original"),
                                "revised": diffing.segments(revised, run["edits"], "revised")}
             for edit in run["edits"]:

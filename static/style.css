@@ -74,7 +74,7 @@ legend { font-size: 12px; margin-bottom: 6px; }
 .checks { display: flex; gap: 12px; flex-wrap: wrap; }
 .checks label { display: flex; align-items: center; gap: 4px; font-weight: 400; }
 input[type=checkbox] { accent-color: #444; }
-#annotation-status { margin-top: 8px; }
+[data-field="annotation-status"] { margin-top: 8px; }
 details { margin-top: 16px; font-size: 12px; }
 details p { margin: 8px 0; }
 summary { color: #666; }
@@ -148,4 +148,34 @@ summary { color: #666; }
 .requirement-edit-text { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 400; margin-top: 4px; }
 .requirement-mapping-status { margin-top: 10px; font-size: 12px; font-weight: 500; }
 
-#reason-field { margin: 12px 0; }
+[data-field="reason-field"] { margin: 12px 0; }
+
+#edit-list { position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); }
+.edit-card { border: 1px solid #ddd; border-radius: 6px; padding: 18px; margin-bottom: 18px; scroll-margin-top: 16px; }
+.edit-card.selected { border-color: #999; }
+@media (max-width: 620px) {
+  #edit-list { position: static; max-height: none; }
+  .edit-excerpts { grid-template-columns: 1fr; }
+  .edit-card { padding: 12px; }
+}
+
+/* Keep the complete diff and independent edit annotations alongside each other. */
+.annotation-layout { grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr); gap: 20px; align-items: start; }
+#edit-list { position: static; display: flex; gap: 6px; border: 0; padding: 8px 0; max-height: none; overflow-x: auto; }
+#edit-list .edit-item { width: auto; flex: none; min-width: 70px; max-width: 110px; }
+#edit-list .edit-preview { display: none; }
+.unified-panel { border: 1px solid #ddd; border-radius: 6px; padding: 18px; max-height: 75vh; overflow-y: auto; }
+.diff-legend { margin: 8px 0 16px; }
+.unified-edit { display: inline; font: inherit; padding: 0; border: 0; border-radius: 2px; background: transparent; white-space: pre-wrap; text-align: left; }
+.unified-edit:hover, .unified-edit.selected { background: #f0f3fa; outline: 1px solid #9aaaca; }
+.unified-edit del, .diff-legend del { background: #f9e4e1; color: #8b2920; text-decoration: line-through; }
+.unified-edit ins, .diff-legend ins { background: #e4f0e3; color: #245b29; text-decoration: underline; text-underline-offset: 3px; }
+.edit-number { font: 10px system-ui, sans-serif; color: #52627a; margin-right: 3px; user-select: none; }
+#annotation-panel { padding: 0; max-height: 75vh; overflow-y: auto; }
+.edit-card { padding: 14px; }
+.edit-card .label-grid { grid-template-columns: 1fr; gap: 8px; }
+@media (max-width: 800px) {
+  .annotation-layout { grid-template-columns: 1fr; }
+  .unified-panel, #annotation-panel { max-height: none; overflow: visible; }
+}
+.unified-edit del + ins { margin-left: .25em; }

@@ -71,31 +71,39 @@
             <button id="clear-requirements">Clear clauses</button>
             <p id="requirements-status" class="muted" role="status"></p>
           </section>
-          <details class="full-passage"><summary>Full passage</summary><div class="passages"><section><h3>Original</h3><div id="original-view" class="passage"></div></section><section><h3>Revision</h3><div id="revised-view" class="passage"></div></section></div></details>
-          <div class="annotation-layout"><nav id="edit-list" aria-label="Edits"></nav>
+          <nav id="edit-list" aria-label="Edits"></nav>
+          <div class="annotation-layout">
+            <section class="unified-panel" aria-labelledby="unified-title">
+              <h3 id="unified-title">Full passage · unified diff</h3>
+              <p class="muted diff-legend"><del>Removed</del> <ins>Added</ins> · Select a numbered edit to annotate it.</p>
+              <div id="unified-view" class="passage" aria-label="Full passage with changes"></div>
+            </section>
             <section id="annotation-panel">
               <div id="no-edit" class="empty"><p>No edits to label. Review the unchanged text, then mark this run reviewed.</p></div>
-              <div id="edit-controls" hidden>
-                <div class="annotation-head"><h3 id="edit-title">Edit</h3><div><button id="previous-edit" aria-label="Previous edit">←</button><button id="next-edit" aria-label="Next edit">→</button></div></div>
-                <div class="edit-excerpts"><div><span class="eyebrow">Before</span><div id="edit-before" class="sentence-context original"></div></div><div><span class="eyebrow">After</span><div id="edit-after" class="sentence-context revised"></div></div></div>
+              <div id="edit-cards"></div>
+              <template id="edit-card-template">
+              <article class="edit-card" tabindex="-1">
+                <div class="annotation-head"><h3 data-field="edit-title">Edit</h3><button data-field="show-in-passage">Show in passage</button></div>
+
                 <div class="label-grid">
-                  <label>Acceptability<select id="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option><option value="uncertain">Uncertain</option></select></label>
-                  <label>What changed?<select id="change-type"><option value="">Choose a type…</option><option value="wording_only">Wording only</option><option value="fidelity_relevant">Fidelity relevant</option><option value="uncertain">Uncertain</option></select></label>
+                  <label>Acceptability<select data-field="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option><option value="uncertain">Uncertain</option></select></label>
+                  <label>What changed?<select data-field="change-type"><option value="">Choose a type…</option><option value="wording_only">Wording only</option><option value="fidelity_relevant">Fidelity relevant</option><option value="uncertain">Uncertain</option></select></label>
                 </div>
-                <label id="reason-field" hidden>Why is this edit unacceptable? <span class="required">*</span>
-                  <textarea id="annotation-reason" rows="3" placeholder="Briefly explain what makes this edit unacceptable." aria-describedby="reason-help"></textarea>
-                  <span id="reason-help" class="muted">Required before confirming an unacceptable edit.</span>
+                <label data-field="reason-field" hidden>Why is this edit unacceptable? <span class="required">*</span>
+                  <textarea data-field="annotation-reason" rows="3" placeholder="Briefly explain what makes this edit unacceptable."></textarea>
+                  <span data-field="reason-help" class="muted">Required before confirming an unacceptable edit.</span>
                 </label>
-                <fieldset id="dimensions" hidden><legend>Fidelity dimensions <span class="optional">optional</span></legend><div class="checks">
+                <fieldset data-field="dimensions" hidden><legend>Fidelity dimensions <span class="optional">optional</span></legend><div class="checks">
                   <label><input type="checkbox" value="certainty">Certainty</label><label><input type="checkbox" value="precision">Precision</label><label><input type="checkbox" value="scope">Scope</label><label><input type="checkbox" value="emphasis">Emphasis</label><label><input type="checkbox" value="other">Other</label>
                 </div></fieldset>
-                <button id="confirm-annotation" class="primary">Confirm &amp; next</button>
-                <button id="delete-annotation" hidden>Clear annotation</button>
-                <p id="annotation-status" class="muted" role="status"></p>
-                <details id="grouping"><summary>Adjust grouping</summary><p class="muted">Merging or splitting clears labels on the affected edits.</p><button id="merge-next">Merge with next edit</button>
-                  <div class="split-controls"><label>Original split point<select id="original-cut"></select></label><label>Revision split point<select id="revised-cut"></select></label><button id="split-edit">Split into two edits</button></div>
+                <button data-field="confirm-annotation" class="primary">Confirm edit</button>
+                <button data-field="delete-annotation" hidden>Clear annotation</button>
+                <p data-field="annotation-status" class="muted" role="status"></p>
+                <details data-field="grouping"><summary>Adjust grouping</summary><p class="muted">Merging or splitting clears labels on the affected edits.</p><button data-field="merge-next">Merge with next edit</button>
+                  <div class="split-controls"><label>Original split point<select data-field="original-cut"></select></label><label>Revision split point<select data-field="revised-cut"></select></label><button data-field="split-edit">Split into two edits</button></div>
                 </details>
-              </div>
+              </article>
+              </template>
             </section>
           </div>
         </div>
