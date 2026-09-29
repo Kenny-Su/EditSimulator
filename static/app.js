@@ -134,7 +134,6 @@ function renderRun() {
   $('delete-case').hidden = !caseId;
   $('delete-run').disabled = !run || run.status === 'pending';
   $('review-empty').hidden = !!run; $('review-content').hidden = !run;
-  $('export-changes').disabled = !run || run.status !== 'completed';
   if (!run) return;
   $('run-instruction').textContent = run.snapshot.instruction;
   $('run-info').textContent = `${run.model} · ${dateText(run.created_at)} · Source: ${run.snapshot.source.identifier}`;
@@ -547,10 +546,6 @@ $('mark-reviewed').onclick = perform(async () => {
 $('export').onclick = perform(async () => {
   await flushAll();
   window.location.assign(`/api/export?scope=${$('export-scope').value}`);
-});
-$('export-changes').onclick = perform(async () => {
-  await flushAll();
-  window.location.assign(`/api/runs/${run.id}/export`);
 });
 window.addEventListener('beforeunload', event => {
   if (formDirty || annotationDrafts.size || requirementDirty || requirementSave || formSave || annotationSave || generating || importing) { event.preventDefault(); event.returnValue = ''; }

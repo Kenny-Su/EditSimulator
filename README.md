@@ -23,7 +23,7 @@ Open http://127.0.0.1:5000. Run one process, without a reloader. Restart after c
 2. Write one request or prohibition per line; generate a revision.
 3. Review the unified diff. Label each edit's acceptability and change type. Give a reason for unacceptable edits, including unauthorized changes. Confirm each edit.
 4. Select fulfilling edits for each request; an empty list means omitted. For prohibitions, judge compliance and select violations. Confirm the clauses.
-5. Mark reviewed and export JSON. **Export LLM changes** excludes annotations.
+5. Mark reviewed and export JSON.
 
 Split or merge groups when changes need separate judgments. Drafts autosave; wait for the saved status before leaving.
 

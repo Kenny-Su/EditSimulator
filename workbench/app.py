@@ -407,32 +407,6 @@ def create_app(config=None):
             db().execute("UPDATE runs SET reviewed_at=?, updated_at=? WHERE id=?", (stamp, stamp, run_id))
         return jsonify(display_run(get_run(run_id)))
 
-    @app.get("/api/runs/<run_id>/export")
-    def export_changes(run_id):
-        with db():
-            db().execute("BEGIN")
-            run = get_run(run_id)
-            if run["status"] != "completed":
-                abort(409, description="Only completed generations can be exported as proposed changes.")
-            changes = []
-            for edit in run["edits"]:
-                change = {key: edit[key] for key in (
-                    "id", "position", "original_start", "original_end", "revised_start", "revised_end")}
-                change["before"] = run["snapshot"]["original"][edit["original_start"]:edit["original_end"]]
-                change["after"] = run["revised"][edit["revised_start"]:edit["revised_end"]]
-                changes.append(change)
-            result = {
-                "schema_version": 1, "export_type": "llm_proposed_changes", "exported_at": storage.now(),
-                "span_convention": "half-open Unicode code-point offsets into snapshot.original and revised",
-                **{key: run[key] for key in ("id", "case_id", "status", "model", "created_at", "snapshot",
-                                           "revised", "request", "response_id", "response")},
-                "changes": changes,
-                "paper": get_paper(run["snapshot"]["provenance"]["paper_id"], True) if run["snapshot"].get("provenance") else None,
-            }
-        response = jsonify(result)
-        response.headers["Content-Disposition"] = f'attachment; filename="llm-proposed-changes-{run["id"]}.json"'
-        return response
-
     @app.get("/api/export")
     def export():
         reviewed_only = request.args.get("scope", "all") == "reviewed"
