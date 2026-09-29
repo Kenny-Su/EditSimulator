@@ -14,30 +14,6 @@ def boundaries(text):
     return result
 
 
-def edits(original, revised):
-    a, b = tokens(original), tokens(revised)
-    aa, bb = boundaries(original), boundaries(revised)
-    return [
-        {"original_start": aa[i], "original_end": aa[j],
-         "revised_start": bb[k], "revised_end": bb[l]}
-        for tag, i, j, k, l in SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
-        if tag != "equal"
-    ]
-
-
-def segments(text, groups, side):
-    result, cursor = [], 0
-    for group in groups:
-        start, end = group[f"{side}_start"], group[f"{side}_end"]
-        if start > cursor:
-            result.append({"text": text[cursor:start], "edit_id": None})
-        result.append({"text": text[start:end], "edit_id": group["id"]})
-        cursor = end
-    if cursor < len(text):
-        result.append({"text": text[cursor:], "edit_id": None})
-    return result
-
-
 def unified_segments(original, revised, groups):
     """Full passage with unchanged text once and token-level removals/additions."""
     result, cursor = [], 0
@@ -139,16 +115,3 @@ def sentence_edits(original, revised):
         if original[aa:ab] != revised[ba:bb]:
             groups.append(dict(original_start=aa, original_end=ab, revised_start=ba, revised_end=bb))
     return groups[::-1]
-
-
-def context(text, start, end):
-    spans = sentences(text)
-    overlapping = [i for i, (a, b) in enumerate(spans) if a < end and b > start]
-    if overlapping:
-        first, last = overlapping[0], overlapping[-1]
-        before = spans[max(0, first - 1)][0]
-        after = spans[min(len(spans) - 1, last + 1)][1]
-    else:
-        before = next((a for a, b in reversed(spans) if b <= start), start)
-        after = next((b for a, b in spans if a >= end), end)
-    return {"before": text[before:start], "after": text[end:after]}

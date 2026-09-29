@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 let paper = null, importing = false;
 let caseId = null, currentCase = null, run = null, selectedId = null;
-let formDirty = false, annotationDirty = false, formSave = null, annotationSave = null;
+let formDirty = false, formSave = null, annotationSave = null;
 const annotationDrafts = new Map();
 let requirementDirty = false, requirementSave = null, requirementTimer;
 let formTimer, annotationTimer, generating = false, config = {};
@@ -45,7 +45,7 @@ async function refreshCases() {
 async function flushForm() {
   clearTimeout(formTimer);
   if (formSave) { await formSave; if (formDirty) return flushForm(); return; }
-  if (!formDirty || !caseId || !currentCase?.provenance) return;
+  if (!formDirty || !caseId || !currentCase) return;
   formSave = (async () => {
     while (formDirty) {
       formDirty = false; saveStatus('Saving…');
@@ -97,7 +97,6 @@ async function flushAnnotation() {
         const result = await api(`/api/edits/${id}/annotation`, {method: 'PUT', body: JSON.stringify(values)});
         // Keep any newer input typed while this request was in flight.
         if (annotationDrafts.get(id) === values) annotationDrafts.delete(id);
-        annotationDirty = annotationDrafts.size > 0;
         applyAnnotationResult(result, id);
         renderProgress(); renderEditList(); updateAnnotationStatus(id);
       } catch (error) {
@@ -122,7 +121,7 @@ async function openCase(id, preferredRunId = null) {
   const target = preferredRunId || currentCase.runs[0]?.id;
   if (target) { run = await api(`/api/runs/${target}`); $('run-select').value = target; }
   else run = null;
-  selectedId = null; annotationDirty = false; renderRun(); await refreshCases();
+  selectedId = null; renderRun(); await refreshCases();
 }
 function setRunOptions(runs) {
   $('run-select').replaceChildren();
@@ -133,27 +132,24 @@ function setRunOptions(runs) {
 
 function renderRun() {
   $('delete-case').hidden = !caseId;
-  $('delete-run').disabled = !run || run.status === 'pending' || run.suggestion_jobs.some(j => j.status === 'pending');
+  $('delete-run').disabled = !run || run.status === 'pending';
   $('review-empty').hidden = !!run; $('review-content').hidden = !run;
-  $('legacy-run-note').hidden = true;
   $('export-changes').disabled = !run || run.status !== 'completed';
   if (!run) return;
-  $('run-instruction').textContent = [run.snapshot.instruction, run.snapshot.constraints].filter(Boolean).join('\n\n');
+  $('run-instruction').textContent = run.snapshot.instruction;
   $('run-info').textContent = `${run.model} · ${dateText(run.created_at)} · Source: ${run.snapshot.source.identifier}`;
   $('completed-review').hidden = run.status !== 'completed';
   $('run-error').hidden = run.status === 'completed';
   $('run-error').textContent = run.error || 'Generation in progress. Use this run selector to refresh its status.';
   if (run.status !== 'completed') return;
-  $('legacy-run-note').hidden = !!run.snapshot.provenance;
   if (!run.edits.some(e => e.id === selectedId)) selectedId = run.edits[0]?.id || null;
   renderUnifiedPassage();
   renderRequirements(); renderProgress(); renderEditList(); renderEditCards();
-  lockLegacyReview();
 }
 function renderProgress() {
   $('progress').textContent = run.reviewed_at && run.requirement_audit?.confirmed_at ? `✓ Reviewed · ${run.edits.length} edits` : `${run.labeled_count} of ${run.edits.length} edits confirmed`;
   const checked = !!run.requirement_audit?.confirmed_at;
-  $('mark-reviewed').disabled = !run.snapshot.provenance || annotationDirty || requirementDirty || !checked || !!run.reviewed_at || run.labeled_count !== run.edits.length;
+  $('mark-reviewed').disabled = annotationDrafts.size || requirementDirty || !checked || !!run.reviewed_at || run.labeled_count !== run.edits.length;
   $('mark-reviewed').textContent = run.reviewed_at && checked ? 'Reviewed ✓' : 'Mark reviewed ✓';
   const option = [...$('run-select').options].find(option => option.value === run.id);
   if (option) option.textContent = runLabel(run);
@@ -163,9 +159,6 @@ function renderEditList() {
   for (const [index, edit] of run.edits.entries()) {
     const button = document.createElement('button'); button.className = 'edit-item' + (edit.id === selectedId ? ' selected' : '');
     button.textContent = `${edit.complete && !annotationDrafts.has(edit.id) ? '✓' : '○'} Edit ${index + 1}`;
-    const preview = document.createElement('span'); preview.className = 'edit-preview';
-    preview.textContent = `${edit.original_text || '∅'} → ${edit.revised_text || '∅'}`;
-    button.append(preview);
     button.onclick = () => selectEdit(edit.id);
     $('edit-list').append(button);
   }
@@ -252,11 +245,11 @@ function updateAnnotationStatus(id) {
   status.textContent = dirty ? 'Unsaved changes…' : edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
     'Draft saved · confirm when ready' : 'Choose labels, then confirm.';
   const missingReason = cardField(id, 'acceptability').value === 'unacceptable' && !cardField(id, 'annotation-reason').value.trim();
-  cardField(id, 'confirm-annotation').disabled = !run.snapshot.provenance || !cardField(id, 'acceptability').value || !cardField(id, 'change-type').value || missingReason;
+  cardField(id, 'confirm-annotation').disabled = !cardField(id, 'acceptability').value || !cardField(id, 'change-type').value || missingReason;
   if (missingReason) status.textContent = 'Add a short reason before confirming this unacceptable edit.';
 }
 function scheduleAnnotation(id) {
-  annotationDrafts.set(id, annotationValues(id)); annotationDirty = true;
+  annotationDrafts.set(id, annotationValues(id));
   updateLabelVisibility(id); updateAnnotationStatus(id); renderEditList();
   $('mark-reviewed').disabled = true;
   clearTimeout(annotationTimer); annotationTimer = setTimeout(() => flushAnnotation().catch(message), 450);
@@ -279,14 +272,11 @@ async function clearAnnotation(id) {
     await flushAll();
     const result = await api(`/api/edits/${id}/annotation`, {method: 'DELETE', body: '{}'});
     applyAnnotationResult(result, id);
-    renderEditCards(); lockLegacyReview(); renderProgress(); renderEditList(); await refreshCases();
+    renderEditCards(); renderProgress(); renderEditList(); await refreshCases();
   });
 }
 
-const outcomes = {
-  request: {fulfilled: 'Fulfilled', partially_fulfilled: 'Partially fulfilled', not_fulfilled: 'Not fulfilled', uncertain: 'Uncertain'},
-  prohibition: {respected: 'Respected', violated: 'Violated', uncertain: 'Uncertain'}
-};
+const prohibitionOutcomes = {respected: 'Respected', violated: 'Violated', uncertain: 'Uncertain'};
 function requirementValues() {
   return [...$('requirement-list').children].map(row => {
     const kind = row.querySelector('.requirement-kind').value;
@@ -296,8 +286,7 @@ function requirementValues() {
       kind,
       outcome: kind === 'request' ? (edit_ids.length ? 'fulfilled' : 'not_fulfilled') : row.querySelector('.requirement-outcome').value,
       explanation: row.querySelector('.requirement-explanation').value,
-      edit_ids,
-      ...(kind === 'request' ? {mapping_mode: 'edit_list'} : {})
+      edit_ids
     };
   });
 }
@@ -306,26 +295,24 @@ function requirementRow(value = {}) {
   function field(title, element) {
     const label = document.createElement('label'); label.append(document.createTextNode(title), element); row.append(label); return element;
   }
-  const text = field('Instruction clause (exact quote)', document.createElement('textarea'));
+  const text = field('Clause', document.createElement('textarea'));
   text.className = 'requirement-text'; text.rows = 2; text.value = value.text || '';
-  text.readOnly = run.snapshot.instruction_format === 'one_request_per_line';
+  text.readOnly = true;
   const kind = field('Clause type', document.createElement('select')); kind.className = 'requirement-kind';
   kind.append(new Option('Request', 'request'), new Option('Prohibition (do not…)', 'prohibition')); kind.value = value.kind || 'request';
   const outcome = field('Was the prohibition respected?', document.createElement('select')); outcome.className = 'requirement-outcome';
   outcome.append(new Option('Choose…', ''));
-  for (const [key, label] of Object.entries(outcomes.prohibition)) outcome.append(new Option(label, key));
+  for (const [key, label] of Object.entries(prohibitionOutcomes)) outcome.append(new Option(label, key));
   outcome.value = value.kind === 'prohibition' ? value.outcome || '' : '';
   const links = document.createElement('fieldset'); links.className = 'requirement-edits';
   const legend = document.createElement('legend'); links.append(legend);
-  const hint = document.createElement('p'); hint.className = 'muted'; links.append(hint);
   const status = document.createElement('p'); status.className = 'requirement-mapping-status'; status.setAttribute('aria-live', 'polite');
   function updateMapping() {
     const prohibition = kind.value === 'prohibition';
     outcome.parentElement.hidden = !prohibition;
-    legend.textContent = prohibition ? 'Edits that violate this prohibition' : 'Edits that fulfill this request';
-    hint.textContent = prohibition ? 'Select offending edits, if any. Judge whether the prohibition was respected above.' : 'Select every edit that fulfills this clause. Leave the list empty if the request was omitted. An edit can fulfill more than one request.';
+    legend.textContent = prohibition ? 'Violating edits' : 'Fulfilling edits';
     const selected = [...links.querySelectorAll('input:checked')].map(input => `Edit ${input.dataset.number}`);
-    status.textContent = selected.length ? selected.join(', ') : prohibition ? 'No violating edits selected.' : 'Omitted — no fulfilling edits selected.';
+    status.textContent = selected.length ? selected.join(', ') : prohibition ? 'None selected.' : 'Omitted — no edits selected.';
   }
   for (const [index, edit] of run.edits.entries()) {
     const label = document.createElement('label'); label.className = 'requirement-edit-option';
@@ -338,7 +325,7 @@ function requirementRow(value = {}) {
     content.append(title, before, after); label.append(checkbox, content); links.append(label);
   }
   if (!run.edits.length) {
-    const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'This revision has no edits to select.'; links.append(empty);
+    const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'No edits.'; links.append(empty);
   }
   links.append(status); row.append(links);
   kind.onchange = () => {
@@ -348,27 +335,18 @@ function requirementRow(value = {}) {
   };
   const explanation = field('Note (optional)', document.createElement('textarea'));
   explanation.className = 'requirement-explanation'; explanation.rows = 2; explanation.value = value.explanation || '';
-  const remove = document.createElement('button'); remove.textContent = 'Remove clause';
-  remove.onclick = () => { row.remove(); scheduleRequirements(); };
-  if (run.snapshot.instruction_format !== 'one_request_per_line') row.append(remove);
   row.addEventListener('input', () => { updateMapping(); scheduleRequirements(); });
   row.addEventListener('change', () => { updateMapping(); scheduleRequirements(); });
   updateMapping(); $('requirement-list').append(row);
 }
 function renderRequirements() {
   const audit = run.requirement_audit;
-  const lineBased = run.snapshot.instruction_format === 'one_request_per_line';
-  $('add-requirement').hidden = lineBased;
-  $('clear-requirements').textContent = lineBased ? 'Reset clause mappings' : 'Clear clauses';
-  $('clause-help').textContent = lineBased
-    ? 'Each nonempty instruction line is one clause. Select the edits that fulfill each request; an empty list means omitted. For a prohibition, change the clause type and record violations separately.'
-    : 'Add each request as an exact quote from the instruction, then select the edits that fulfill it. An empty list means omitted. For prohibitions, change the clause type and record violations separately.';
   $('requirement-list').replaceChildren();
   for (const value of audit?.annotation ?? []) requirementRow(value);
   $('clear-requirements').disabled = !audit;
-  $('requirements-status').textContent = audit?.confirmed_at ? 'All clauses and edit lists confirmed.' :
-    audit?.annotation ? 'Draft saved. Check each clause and its selected edits, then confirm.' :
-    'Add each instruction clause, then select the edits that fulfill it.';
+  $('requirements-status').textContent = audit?.confirmed_at ? 'Confirmed.' :
+    audit?.annotation ? 'Draft saved · confirm when ready.' :
+    'Select edits for each clause.';
 }
 function scheduleRequirements() {
   requirementDirty = true; $('mark-reviewed').disabled = true;
@@ -391,41 +369,27 @@ async function flushRequirements() {
   })();
   try { await requirementSave; } finally { requirementSave = null; }
 }
-$('add-requirement').onclick = () => { requirementRow(); scheduleRequirements(); };
 $('confirm-requirements').onclick = perform(() => withReviewLocked(async () => {
   await flushAll();
   run = await api(`/api/runs/${run.id}/requirements`, {method: 'PUT', body: JSON.stringify({requirements: requirementValues(), confirmed: true})});
   renderRun(); await refreshCases();
 }));
 $('clear-requirements').onclick = perform(() => withReviewLocked(async () => {
-  const prompt = run.snapshot.instruction_format === 'one_request_per_line'
-    ? 'Reset all clause mappings, types, notes, and confirmation? The instruction lines and edit annotations remain.'
-    : 'Clear the instruction requirements and their confirmation? Edit annotations remain.';
-  if (!confirm(prompt)) return;
+  if (!confirm('Reset clause mappings, notes, and confirmation?')) return;
   await flushAll(); run = await api(`/api/runs/${run.id}/requirements`, {method: 'DELETE', body: '{}'});
   renderRun(); await refreshCases();
 }));
 
-function lockLegacyReview() {
-  const legacy = !run?.snapshot.provenance;
-  for (const element of document.querySelectorAll('#requirements-panel input, #requirements-panel textarea, #requirements-panel select, #requirements-panel button')) element.disabled = legacy;
-  if (legacy) {
-    for (const element of document.querySelectorAll('.edit-card input, .edit-card textarea, .edit-card select, .edit-card button:not([data-field="show-in-passage"])')) element.disabled = true;
-    $('mark-reviewed').disabled = true;
-  } else $('clear-requirements').disabled = !run.requirement_audit;
-}
 function renderSource() {
   $('import-panel').hidden = !!caseId;
   $('source-summary').hidden = !caseId;
   $('case-form').hidden = !caseId;
-  $('generate').disabled = !currentCase?.provenance || !config.generation_ready;
-  $('case-form').elements.instruction.disabled = !currentCase?.provenance;
+  $('generate').disabled = !currentCase || !config.generation_ready;
   if (!currentCase) return;
   $('source-title').textContent = currentCase.source.title;
   $('source-url').textContent = currentCase.source.identifier;
   $('source-section').textContent = currentCase.source.section;
   $('source-passage').textContent = currentCase.original;
-  $('legacy-note').hidden = !!currentCase.provenance;
 }
 async function refreshPapers() {
   const result = await api('/api/papers');
@@ -509,12 +473,12 @@ $('use-selection').onclick = perform(async () => {
 });
 
 $('case-form').addEventListener('input', () => {
-  if (!currentCase?.provenance) return;
+  if (!currentCase) return;
   formDirty = true; saveStatus('Unsaved changes…');
   clearTimeout(formTimer); formTimer = setTimeout(() => flushForm().catch(message), 600);
 });
 $('case-form').addEventListener('submit', perform(async event => {
-  event.preventDefault(); if (generating || !currentCase?.provenance) return;
+  event.preventDefault(); if (generating || !currentCase) return;
   generating = true; $('generate').disabled = true; $('generate').textContent = 'Generating…'; clearMessage();
   const lockedRegions = [$('case-form'), $('review-section'), document.querySelector('.sidebar'), document.querySelector('.export-tools')];
   lockedRegions.forEach(region => { region.inert = true; });
@@ -522,8 +486,7 @@ $('case-form').addEventListener('submit', perform(async event => {
   try {
     formDirty = true; await flushAll();
     const targetCase = caseId;
-    const pending = api(`/api/cases/${targetCase}/generate`, {method: 'POST', body: '{}'});
-    const result = await pending;
+    const result = await api(`/api/cases/${targetCase}/generate`, {method: 'POST', body: '{}'});
     if (caseId === targetCase) {
       // Do not reload the input form: it may contain edits made while generation was running.
       run = result; selectedId = null;
@@ -534,14 +497,14 @@ $('case-form').addEventListener('submit', perform(async event => {
   } finally {
     lockedRegions.forEach(region => { region.inert = false; });
     $('case-form').removeAttribute('aria-busy');
-    generating = false; $('generate').disabled = !currentCase?.provenance || !config.generation_ready; $('generate').textContent = 'Generate revision';
+    generating = false; $('generate').disabled = !currentCase || !config.generation_ready; $('generate').textContent = 'Generate revision';
   }
 }));
 $('new-case').onclick = perform(async () => {
   await flushAll(); clearMessage(); caseId = null; currentCase = null; run = null; selectedId = null;
   $('case-form').reset(); history.replaceState(null, '', '/'); $('case-heading').textContent = 'Passage';
   saveStatus('Not saved yet'); setRunOptions([]); renderRun(); renderSource(); await refreshCases();
-  renderSource(); await refreshPapers(); $('xml-file').focus();
+  await refreshPapers(); $('xml-file').focus();
 });
 $('delete-run').onclick = perform(async () => {
   if (!confirm('Permanently delete this run, including its revision and annotations? Other runs will remain.')) return;
@@ -590,12 +553,12 @@ $('export-changes').onclick = perform(async () => {
   window.location.assign(`/api/runs/${run.id}/export`);
 });
 window.addEventListener('beforeunload', event => {
-  if (formDirty || annotationDirty || requirementDirty || requirementSave || formSave || annotationSave || generating || importing) { event.preventDefault(); event.returnValue = ''; }
+  if (formDirty || annotationDrafts.size || requirementDirty || requirementSave || formSave || annotationSave || generating || importing) { event.preventDefault(); event.returnValue = ''; }
 });
 (async () => {
   try {
     config = await api('/api/config'); $('model').textContent = config.model || 'Model not configured';
-    if (!config.generation_ready) $('configuration-note').textContent = 'Set OPENAI_API_KEY and OPENAI_MODEL, then restart to generate. You can save passages now.';
+    if (!config.generation_ready) $('configuration-note').textContent = 'Set OPENAI_API_KEY and OPENAI_MODEL to generate.';
     await refreshCases(); await refreshPapers(); renderSource();
     const id = location.hash.slice(1);
     if (id) await openCase(id);

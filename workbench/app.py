@@ -78,8 +78,6 @@ def create_app(config=None):
             abort(404, description="Run not found.")
         if completed and value["status"] != "completed":
             abort(409, description="Only completed generations can be annotated.")
-        if completed and not value["snapshot"].get("provenance"):
-            abort(409, description="This historical run has no ACM XML source. Import ACM XML to start a new annotation.")
         return value
 
     def get_paper(paper_id, include_xml=False):
@@ -94,17 +92,10 @@ def create_app(config=None):
         if run["status"] == "completed":
             original, revised = run["snapshot"]["original"], run["revised"]
             run["unified_segments"] = diffing.unified_segments(original, revised, run["edits"])
-            run["segments"] = {"original": diffing.segments(original, run["edits"], "original"),
-                               "revised": diffing.segments(revised, run["edits"], "revised")}
             for edit in run["edits"]:
-                left = original[edit["original_start"]:edit["original_end"]]
-                right = revised[edit["revised_start"]:edit["revised_end"]]
-                highlights = [dict(span, id=edit["id"]) for span in diffing.edits(left, right)]
                 for side, text in (("original", original), ("revised", revised)):
                     start, end = edit[f"{side}_start"], edit[f"{side}_end"]
                     edit[f"{side}_text"] = text[start:end]
-                    edit[f"{side}_context"] = diffing.context(text, start, end)
-                    edit[f"{side}_segments"] = diffing.segments(text[start:end], highlights, side)
                     # Send boundary labels as well as offsets, avoiding JS slicing of code points.
                     edit[f"{side}_boundaries"] = [
                         {"offset": start + cut, "label": (text[start:start + cut][-28:] + " | "
@@ -186,8 +177,6 @@ def create_app(config=None):
     @app.patch("/api/cases/<case_id>")
     def update_case(case_id):
         case, data = get_case(case_id), payload()
-        if not case["provenance"]:
-            abort(409, description="Historical passages are read-only. Import ACM XML to create a new passage.")
         if set(data) - {"instruction"}:
             abort(400, description="Imported text and source metadata are read-only. Create a new passage to change the selection.")
         with db():
@@ -208,21 +197,16 @@ def create_app(config=None):
     def generate(case_id):
         payload()
         case = get_case(case_id)
-        if not case["provenance"]:
-            abort(409, description="Import ACM XML and select a passage before generating.")
         if not all(value.strip() for value in (case["original"], case["instruction"], case["source"]["identifier"])):
             abort(400, description="Select an ACM passage and add an editing instruction before generating.")
         if not app.config["OPENAI_API_KEY"] or not app.config["OPENAI_MODEL"]:
             abort(400, description="Set OPENAI_API_KEY and OPENAI_MODEL in .env or your shell, then restart the app.")
         snapshot = {key: case[key] for key in ("original", "instruction", "source", "provenance")}
-        snapshot["instruction_format"] = "one_request_per_line"
         api_request = generation.build_request(snapshot, app.config["OPENAI_MODEL"])
         stamp, run_id = storage.now(), storage.uid()
         try:
             with db():
                 db().execute("BEGIN IMMEDIATE")
-                if db().execute("SELECT 1 FROM suggestion_jobs WHERE status='pending'").fetchone():
-                    abort(409, description="A suggestion request is already running.")
                 db().execute("""INSERT INTO runs
                     (id, case_id, status, snapshot_json, request_json, model, created_at, updated_at)
                     VALUES (?,?,'pending',?,?,?,?,?)""",
@@ -244,7 +228,6 @@ def create_app(config=None):
                 if complete:
                     for position, span in enumerate(diffing.sentence_edits(snapshot["original"], text)):
                         storage.add_group(db(), run_id, position, span)
-                    db().execute("UPDATE runs SET grouping_version=1 WHERE id=?", (run_id,))
                     db().execute("INSERT INTO requirement_audits (run_id,annotation_json,updated_at) VALUES (?,?,?)",
                                  (run_id, json.dumps(requirements.initial_requirements(snapshot)), storage.now()))
         except Exception as error:
@@ -266,27 +249,17 @@ def create_app(config=None):
         with db():
             db().execute("BEGIN IMMEDIATE")
             run = get_run(run_id, completed=True)
-            if any(j["status"] == "pending" for j in run["suggestion_jobs"]):
-                abort(409, description="Wait for suggestions to finish.")
             stamp = storage.now()
-            if request.method == "DELETE":
-                if run['snapshot'].get('instruction_format') == 'one_request_per_line':
-                    db().execute("""INSERT INTO requirement_audits (run_id,annotation_json,updated_at) VALUES (?,?,?)
-                        ON CONFLICT(run_id) DO UPDATE SET annotation_json=excluded.annotation_json,
-                        confirmed_at=NULL,updated_at=excluded.updated_at""",
-                        (run_id, json.dumps(requirements.initial_requirements(run['snapshot'])), stamp))
-                else:
-                    db().execute("DELETE FROM requirement_audits WHERE run_id=?", (run_id,))
-            else:
-                rows = data.get("requirements")
-                try:
-                    requirements.validate_requirements(rows, run, draft=data.get("confirmed") is not True)
-                except ValueError as error:
-                    abort(400, description=str(error))
-                db().execute("""INSERT INTO requirement_audits (run_id,annotation_json,confirmed_at,updated_at)
-                    VALUES (?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET annotation_json=excluded.annotation_json,
-                    confirmed_at=excluded.confirmed_at,updated_at=excluded.updated_at""",
-                    (run_id, json.dumps(rows), stamp if data.get("confirmed") is True else None, stamp))
+            confirmed = request.method == "PUT" and data.get("confirmed") is True
+            rows = requirements.initial_requirements(run['snapshot']) if request.method == "DELETE" else data.get("requirements")
+            try:
+                requirements.validate_requirements(rows, run, draft=not confirmed)
+            except ValueError as error:
+                abort(400, description=str(error))
+            db().execute("""INSERT INTO requirement_audits (run_id,annotation_json,confirmed_at,updated_at)
+                VALUES (?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET annotation_json=excluded.annotation_json,
+                confirmed_at=excluded.confirmed_at,updated_at=excluded.updated_at""",
+                (run_id, json.dumps(rows), stamp if confirmed else None, stamp))
             db().execute("UPDATE runs SET reviewed_at=NULL,updated_at=? WHERE id=?", (stamp, run_id))
         return jsonify(display_run(get_run(run_id)))
 
@@ -314,19 +287,16 @@ def create_app(config=None):
             abort(400, description="Choose both labels before confirming.")
         if confirmed and acceptability == "unacceptable" and not reason.strip():
             abort(400, description="Add a short reason before confirming an unacceptable edit.")
-        if data.get("suggestion_job_id") is not None:
-            abort(400, description="Annotations must be entered manually.")
-        job_id = None
         stamp = storage.now()
         with db():
             db().execute("""INSERT INTO annotations
-                (edit_id, acceptability, change_type, dimensions_json, reason, created_at, updated_at, confirmed_at, suggestion_job_id)
-                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(edit_id) DO UPDATE SET
+                (edit_id, acceptability, change_type, dimensions_json, reason, created_at, updated_at, confirmed_at)
+                VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(edit_id) DO UPDATE SET
                 acceptability=excluded.acceptability, change_type=excluded.change_type,
                 reason=excluded.reason,
                 dimensions_json=excluded.dimensions_json, updated_at=excluded.updated_at,
-                confirmed_at=excluded.confirmed_at, suggestion_job_id=excluded.suggestion_job_id""",
-                (edit_id, acceptability, change_type, json.dumps(list(dict.fromkeys(dimensions))), reason, stamp, stamp, stamp if confirmed else None, job_id))
+                confirmed_at=excluded.confirmed_at""",
+                (edit_id, acceptability, change_type, json.dumps(list(dict.fromkeys(dimensions))), reason, stamp, stamp, stamp if confirmed else None))
             db().execute("UPDATE runs SET reviewed_at=NULL, updated_at=? WHERE id=?", (stamp, group["run_id"]))
         return jsonify(display_run(get_run(group["run_id"])))
 
@@ -346,12 +316,11 @@ def create_app(config=None):
 
     def remove_run(run_id):
         run = get_run(run_id)
-        if run["status"] == "pending" or any(j["status"] == "pending" for j in run["suggestion_jobs"]):
+        if run["status"] == "pending":
             abort(409, description="Wait for the model request to finish before deleting.")
-        # Edit deletion cascades to annotations and suggestions before their jobs are removed.
+        # Edit deletion cascades to annotations.
         db().execute("DELETE FROM requirement_audits WHERE run_id=?", (run_id,))
         db().execute("DELETE FROM edit_groups WHERE run_id=?", (run_id,))
-        db().execute("DELETE FROM suggestion_jobs WHERE run_id=?", (run_id,))
         db().execute("DELETE FROM runs WHERE id=?", (run_id,))
 
     @app.delete("/api/runs/<run_id>")
@@ -381,8 +350,6 @@ def create_app(config=None):
         with db():
             db().execute("BEGIN IMMEDIATE")
             run = get_run(run_id, completed=True)
-            if db().execute("SELECT 1 FROM suggestion_jobs WHERE run_id=? AND status='pending'", (run_id,)).fetchone():
-                abort(409, description="Wait for suggestions before adjusting grouping.")
             groups = run["edits"]
             index = next((i for i, e in enumerate(groups) if e["id"] == data.get("edit_id")), None)
             if index is None:
@@ -411,9 +378,9 @@ def create_app(config=None):
                 removed_ids = {e["id"] for e in removed}
                 for row in rows or []:
                     row["edit_ids"] = [i for i in row.get("edit_ids", []) if i not in removed_ids]
-                    if row.get("mapping_mode") == "edit_list" and row["kind"] == "request":
+                    if row["kind"] == "request":
                         row["outcome"] = "fulfilled" if row["edit_ids"] else "not_fulfilled"
-                db().execute("UPDATE requirement_audits SET suggestion_json=NULL,annotation_json=?,confirmed_at=NULL,updated_at=? WHERE run_id=?",
+                db().execute("UPDATE requirement_audits SET annotation_json=?,confirmed_at=NULL,updated_at=? WHERE run_id=?",
                              (json.dumps(rows or []), storage.now(), run_id))
             for old in removed:
                 db().execute("DELETE FROM edit_groups WHERE id=?", (old["id"],))
@@ -482,7 +449,7 @@ def create_app(config=None):
             paper_ids = {c["provenance"]["paper_id"] for c in cases if c["provenance"]}
             paper_ids.update(r["snapshot"]["provenance"]["paper_id"] for c in cases for r in c["runs"] if r["snapshot"].get("provenance"))
             papers = [get_paper(pid, True) for pid in sorted(paper_ids)]
-        result = {"schema_version": 4, "exported_at": storage.now(),
+        result = {"schema_version": 5, "exported_at": storage.now(),
                   "span_convention": "half-open Unicode code-point offsets into immutable run snapshot.original and run.revised",
                   "scope": "reviewed" if reviewed_only else "all", "cases": cases, "papers": papers}
         response = jsonify(result)
