@@ -25,7 +25,7 @@ Open http://127.0.0.1:5000. Run one process, without a reloader. Restart after c
 4. Select fulfilling edits for each request; an empty list means omitted. For prohibitions, judge compliance and select violations. Confirm the clauses.
 5. Mark reviewed and export JSON.
 
-Split or merge groups when changes need separate judgments. Drafts autosave; wait for the saved status before leaving.
+Only the selected edit's judgment box is shown. Select another edit in the passage or edit list to switch boxes. Split or merge groups when changes need separate judgments. Drafts autosave; wait for the saved status before leaving.
 
 ## Definition of done
 
