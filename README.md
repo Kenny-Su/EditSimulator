@@ -21,7 +21,7 @@ Open http://127.0.0.1:5000. Run one process, without a reloader. Restart after c
 
 1. Import ACM full-text XML and select a passage.
 2. Write one request or prohibition per line; generate a revision.
-3. Review the unified diff. Mark each edit acceptable or unacceptable. Add a short reason for unacceptable edits, including unauthorized changes. Confirm each edit.
+3. Review the side-by-side diff. Original and revised text align by edit and scroll together. Mark each edit acceptable or unacceptable. Add a short reason for unacceptable edits, including unauthorized changes. Confirm each edit.
 4. Select fulfilling edits for each request; an empty list means omitted. For prohibitions, judge compliance and select violations. Confirm the clauses.
 5. Mark reviewed and export JSON.
 

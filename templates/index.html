@@ -70,10 +70,13 @@
           </section>
           <nav id="edit-list" aria-label="Edits"></nav>
           <div class="annotation-layout">
-            <section class="unified-panel" aria-labelledby="unified-title">
-              <h3 id="unified-title">Full passage · unified diff</h3>
+            <section class="diff-panel" aria-labelledby="diff-title">
+              <h3 id="diff-title">Full passage · side-by-side diff</h3>
               <p class="muted diff-legend"><del>Removed</del> <ins>Added</ins> · Select a numbered edit to annotate it.</p>
-              <div id="unified-view" class="passage" aria-label="Full passage with changes"></div>
+              <div class="diff-scroll" tabindex="0" role="region" aria-label="Original and revised passages, scrolling together">
+                <div class="diff-columns"><h3>Original</h3><h3>Revised</h3></div>
+                <div id="parallel-view"></div>
+              </div>
             </section>
             <section id="annotation-panel">
               <div id="no-edit" class="empty"><p>No changes. Confirm the clauses, then mark reviewed.</p></div>

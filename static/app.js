@@ -140,7 +140,7 @@ function renderRun() {
   $('run-error').textContent = run.error || 'Generation in progress. Use this run selector to refresh its status.';
   if (run.status !== 'completed') return;
   if (!run.edits.some(e => e.id === selectedId)) selectedId = run.edits[0]?.id || null;
-  renderUnifiedPassage();
+  renderParallelPassage();
   renderRequirements(); renderProgress(); renderEditList(); renderEditCards();
 }
 function renderProgress() {
@@ -160,38 +160,50 @@ function renderEditList() {
     $('edit-list').append(button);
   }
 }
-function renderUnifiedPassage() {
-  const view = $('unified-view'); view.replaceChildren();
-  let currentId = null, target = view;
+function renderParallelPassage() {
+  const view = $('parallel-view'); view.replaceChildren();
+  const groups = [];
   for (const segment of run.unified_segments) {
-    if (!segment.edit_id) {
-      view.append(document.createTextNode(segment.text)); currentId = null; target = view;
-      continue;
+    const previous = groups[groups.length - 1];
+    if (previous && previous.id === segment.edit_id) previous.segments.push(segment);
+    else groups.push({id: segment.edit_id, segments: [segment]});
+  }
+  for (const group of groups) {
+    const row = document.createElement('div'); row.className = 'diff-row';
+    const index = run.edits.findIndex(edit => edit.id === group.id);
+    for (const side of ['original', 'revised']) {
+      const cell = document.createElement(group.id ? 'button' : 'div');
+      cell.className = `diff-cell ${side}`;
+      if (group.id) {
+        cell.type = 'button'; cell.classList.add('diff-edit'); cell.dataset.editId = group.id;
+        cell.classList.toggle('selected', group.id === selectedId);
+        cell.setAttribute('aria-pressed', String(group.id === selectedId));
+        cell.setAttribute('aria-label', `Edit ${index + 1}, ${side}: ${run.edits[index][`${side}_text`] || 'No text'}`);
+        const badge = document.createElement('span'); badge.className = 'edit-number';
+        badge.textContent = `Edit ${index + 1}`; badge.setAttribute('aria-hidden', 'true');
+        cell.append(badge); cell.onclick = () => selectEdit(group.id);
+      }
+      const text = document.createElement('span'); text.className = 'diff-text';
+      for (const segment of group.segments) {
+        if (segment.kind === (side === 'original' ? 'insert' : 'delete')) continue;
+        const span = document.createElement(segment.kind === 'delete' ? 'del' : segment.kind === 'insert' ? 'ins' : 'span');
+        span.textContent = segment.text; text.append(span);
+      }
+      cell.append(text); row.append(cell);
     }
-    if (segment.edit_id !== currentId) {
-      currentId = segment.edit_id;
-      const index = run.edits.findIndex(edit => edit.id === currentId);
-      const id = currentId;
-      const button = document.createElement('button');
-      button.className = 'unified-edit'; button.dataset.editId = id;
-      button.classList.toggle('selected', id === selectedId);
-      button.title = `Annotate edit ${index + 1}`;
-      button.setAttribute('aria-label', `Edit ${index + 1}: ${run.edits[index].original_text || 'insertion'} → ${run.edits[index].revised_text || 'deletion'}`);
-      const badge = document.createElement('sup'); badge.className = 'edit-number'; badge.textContent = index + 1; badge.setAttribute('aria-hidden', 'true');
-      button.append(badge); button.onclick = () => selectEdit(id);
-      view.append(button); target = button;
-    }
-    const span = document.createElement(segment.kind === 'delete' ? 'del' : segment.kind === 'insert' ? 'ins' : 'span');
-    span.textContent = segment.text; target.append(span);
+    view.append(row);
   }
 }
 function selectEdit(id, showPassage = false) {
   selectedId = id;
   for (const card of document.querySelectorAll('.edit-card')) card.classList.toggle('selected', card.dataset.editId === id);
-  for (const button of document.querySelectorAll('.unified-edit')) button.classList.toggle('selected', button.dataset.editId === id);
+  for (const button of document.querySelectorAll('.diff-edit')) {
+    button.classList.toggle('selected', button.dataset.editId === id);
+    button.setAttribute('aria-pressed', String(button.dataset.editId === id));
+  }
   renderEditList();
-  const target = showPassage ? [...$('unified-view').querySelectorAll('.unified-edit')].find(button => button.dataset.editId === id) : editCard(id);
-  target?.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  const target = showPassage ? [...$('parallel-view').querySelectorAll('.diff-edit')].find(button => button.dataset.editId === id) : editCard(id);
+  target?.scrollIntoView({behavior: 'smooth', block: showPassage ? 'start' : 'nearest'});
   target?.focus({preventScroll: true});
 }
 function renderEditCards() {

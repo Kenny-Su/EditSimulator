@@ -37,7 +37,7 @@ summary { color: #666; }
 .case-item strong, .case-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .case-item strong { font-size: 12px; font-weight: 500; }
 .case-item small { font-size: 11px; color: #777; margin-top: 3px; }
-main { flex: 1; min-width: 0; max-width: 1240px; padding: 0 28px 32px; }
+main { flex: 1; min-width: 0; max-width: 1720px; padding: 0 28px 32px; }
 .topbar, .section-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .topbar { padding: 20px 0; border-bottom: 1px solid #ddd; }
 .section-head { margin-bottom: 16px; }
@@ -84,19 +84,29 @@ main { flex: 1; min-width: 0; max-width: 1240px; padding: 0 28px 32px; }
 .requirement-edit-text { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 400; margin-top: 4px; }
 .requirement-mapping-status { margin-top: 10px; font-size: 12px; font-weight: 500; }
 
-.annotation-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr); gap: 20px; align-items: start; }
+.annotation-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
 #edit-list { display: flex; gap: 6px; padding: 8px 0; overflow-x: auto; }
 .edit-item { flex: none; min-width: 70px; max-width: 110px; text-align: left; border-color: transparent; font-size: 12px; margin-bottom: 4px; white-space: nowrap; }
 .edit-item.selected { background: #f3f3f3; border-color: #ddd; }
-.unified-panel { border: 1px solid #ddd; border-radius: 6px; padding: 18px; max-height: 75vh; overflow-y: auto; }
+.diff-panel { min-width: 0; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+.diff-panel > h3 { padding: 16px 16px 0; }
 .passage { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
-.diff-legend { margin: 8px 0 16px; }
-.unified-edit { display: inline; font: inherit; padding: 0; border: 0; border-radius: 2px; background: transparent; white-space: pre-wrap; text-align: left; }
-.unified-edit:hover, .unified-edit.selected { background: #f0f3fa; outline: 1px solid #9aaaca; }
-.unified-edit del, .diff-legend del { background: #f9e4e1; color: #8b2920; text-decoration: line-through; }
-.unified-edit ins, .diff-legend ins { background: #e4f0e3; color: #245b29; text-decoration: underline; text-underline-offset: 3px; }
-.unified-edit del + ins { margin-left: .25em; }
-.edit-number { font: 10px system-ui, sans-serif; color: #52627a; margin-right: 3px; user-select: none; }
+.diff-legend { margin: 8px 16px 16px; }
+.diff-scroll { max-height: 75vh; overflow: auto; }
+.diff-columns, .diff-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 480px; }
+.diff-columns { position: sticky; top: 0; z-index: 1; background: #f7f7f7; border-block: 1px solid #ddd; }
+.diff-columns h3 { padding: 10px 14px; }
+.diff-columns h3 + h3, .diff-cell + .diff-cell { border-left: 1px solid #ddd; }
+.diff-row + .diff-row { border-top: 1px solid #eee; }
+.diff-cell { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; min-width: 0; margin: 0; padding: 12px 14px; border: 0; border-radius: 0; text-align: left; font: inherit; background: #fff; }
+.diff-text { display: block; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.diff-edit { cursor: pointer; scroll-margin-block: 48px 12px; }
+.diff-edit:hover, .diff-edit.selected { background: #f0f3fa; }
+.diff-edit.selected { box-shadow: inset 0 0 0 1px #9aaaca; }
+.diff-edit:focus-visible { outline-offset: -3px; }
+.diff-edit del, .diff-legend del { background: #f9e4e1; color: #8b2920; text-decoration: line-through; }
+.diff-edit ins, .diff-legend ins { background: #e4f0e3; color: #245b29; text-decoration: underline; text-underline-offset: 3px; }
+.edit-number { display: block; font: 11px system-ui, sans-serif; color: #52627a; margin-bottom: 6px; user-select: none; }
 #annotation-panel { min-width: 0; max-height: 75vh; overflow-y: auto; }
 .edit-card { border: 1px solid #ddd; border-radius: 6px; padding: 14px; margin-bottom: 18px; scroll-margin-top: 16px; }
 .edit-card.selected { border-color: #999; }
@@ -113,9 +123,9 @@ main { flex: 1; min-width: 0; max-width: 1240px; padding: 0 28px 32px; }
   .sidebar { width: 170px; min-width: 170px; padding: 20px 12px; }
   main { padding: 0 20px 24px; }
 }
-@media (max-width: 800px) {
+@media (max-width: 1200px) {
   .annotation-layout { grid-template-columns: 1fr; }
-  .unified-panel, #annotation-panel { max-height: none; overflow: visible; }
+  #annotation-panel { max-height: none; overflow: visible; }
 }
 @media (max-width: 620px) {
   body { display: block; }
