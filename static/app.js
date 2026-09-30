@@ -70,9 +70,16 @@ async function flushForm() {
 
 const editCard = id => document.getElementById(`edit-card-${id}`);
 const cardField = (id, name) => editCard(id).querySelector(`[data-field="${name}"]`);
+function setJudgment(id, value) {
+  const group = cardField(id, 'acceptability');
+  group.dataset.value = value;
+  for (const button of group.querySelectorAll('[data-judgment]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.judgment === value));
+  }
+}
 function annotationValues(id) {
-  return {acceptability: cardField(id, 'acceptability').value || null,
-    reason: cardField(id, 'acceptability').value === 'unacceptable' ? cardField(id, 'annotation-reason').value : '',
+  return {acceptability: cardField(id, 'acceptability').dataset.value || null,
+    reason: cardField(id, 'acceptability').dataset.value === 'unacceptable' ? cardField(id, 'annotation-reason').value : '',
     confirmed: false};
 }
 function applyAnnotationResult(result, id) {
@@ -221,7 +228,7 @@ function renderEditCards() {
     field('annotation-reason').setAttribute('aria-describedby', field('reason-help').id);
     field('show-in-passage').onclick = () => selectEdit(edit.id, true);
     const labels = annotationDrafts.get(edit.id) || edit.annotation;
-    field('acceptability').value = labels?.acceptability || '';
+    setJudgment(edit.id, labels?.acceptability || '');
     field('annotation-reason').value = labels?.reason || '';
     field('merge-next').disabled = index === run.edits.length - 1;
     for (const side of ['original', 'revised']) {
@@ -229,7 +236,12 @@ function renderEditCards() {
       for (const boundary of edit[`${side}_boundaries`]) select.append(new Option(boundary.label, boundary.offset));
       select.selectedIndex = Math.floor((select.options.length - 1) / 2);
     }
-    field('acceptability').onchange = () => scheduleAnnotation(edit.id);
+    for (const button of field('acceptability').querySelectorAll('[data-judgment]')) {
+      button.onclick = () => {
+        setJudgment(edit.id, button.dataset.judgment);
+        scheduleAnnotation(edit.id);
+      };
+    }
     field('annotation-reason').oninput = () => scheduleAnnotation(edit.id);
     field('confirm-annotation').onclick = perform(() => confirmAnnotation(edit.id));
     field('delete-annotation').onclick = perform(() => clearAnnotation(edit.id));
@@ -239,7 +251,7 @@ function renderEditCards() {
   }
 }
 function updateLabelVisibility(id) {
-  const needsReason = cardField(id, 'acceptability').value === 'unacceptable';
+  const needsReason = cardField(id, 'acceptability').dataset.value === 'unacceptable';
   cardField(id, 'reason-field').hidden = !needsReason;
   cardField(id, 'annotation-reason').required = needsReason;
 }
@@ -250,8 +262,8 @@ function updateAnnotationStatus(id) {
   const status = cardField(id, 'annotation-status');
   status.textContent = dirty ? 'Unsaved changes…' : edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
     'Draft saved · confirm when ready' : 'Choose labels, then confirm.';
-  const missingReason = cardField(id, 'acceptability').value === 'unacceptable' && !cardField(id, 'annotation-reason').value.trim();
-  cardField(id, 'confirm-annotation').disabled = !cardField(id, 'acceptability').value || missingReason;
+  const missingReason = cardField(id, 'acceptability').dataset.value === 'unacceptable' && !cardField(id, 'annotation-reason').value.trim();
+  cardField(id, 'confirm-annotation').disabled = !cardField(id, 'acceptability').dataset.value || missingReason;
   if (missingReason) status.textContent = 'Add a short reason before confirming this unacceptable edit.';
 }
 function scheduleAnnotation(id) {
@@ -272,6 +284,16 @@ async function confirmAnnotation(id) {
     applyAnnotationResult(result, id);
     updateAnnotationStatus(id); renderProgress(); renderEditList(); await refreshCases();
   });
+  const next = run.edits[run.edits.findIndex(edit => edit.id === id) + 1];
+  if (next) {
+    selectEdit(next.id);
+    const cell = [...$('parallel-view').querySelectorAll('.diff-edit')].find(button => button.dataset.editId === next.id);
+    const scroller = document.querySelector('.diff-scroll');
+    if (cell && scroller) {
+      const headerHeight = scroller.querySelector('.diff-columns').getBoundingClientRect().height;
+      scroller.scrollTo({top: scroller.scrollTop + cell.getBoundingClientRect().top - scroller.getBoundingClientRect().top - headerHeight, behavior: 'smooth'});
+    }
+  }
 }
 async function clearAnnotation(id) {
   await withReviewLocked(async () => {
