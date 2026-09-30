@@ -12,7 +12,7 @@ def instruction_lines(instruction):
 
 def initial_requirements(snapshot):
     return [dict(text=text, kind='request',
-                 outcome='not_fulfilled', edit_ids=[], explanation='')
+                 outcome='not_fulfilled', edit_ids=[])
             for text in instruction_lines(snapshot['instruction'])]
 
 
@@ -32,8 +32,7 @@ def validate_requirements(rows, run, draft=False):
             row['outcome'] = 'fulfilled' if row['edit_ids'] else 'not_fulfilled'
         if row.get('outcome') not in OUTCOMES[row['kind']] and not (draft and row.get('outcome') == ''):
             raise ValueError('Choose an outcome for each prohibition.')
-        if not isinstance(row.get('explanation', ''), str):
-            raise ValueError('Explanation must be text.')
+        row.pop('explanation', None)
     if [row['text'] for row in rows] != instruction_lines(run['snapshot']['instruction']):
         raise ValueError('Keep one clause per instruction line, in order.')
     return rows

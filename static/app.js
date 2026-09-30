@@ -72,9 +72,7 @@ const editCard = id => document.getElementById(`edit-card-${id}`);
 const cardField = (id, name) => editCard(id).querySelector(`[data-field="${name}"]`);
 function annotationValues(id) {
   return {acceptability: cardField(id, 'acceptability').value || null,
-    change_type: cardField(id, 'change-type').value || null,
-    reason: cardField(id, 'annotation-reason').value,
-    dimensions: [...cardField(id, 'dimensions').querySelectorAll('input:checked')].map(input => input.value),
+    reason: cardField(id, 'acceptability').value === 'unacceptable' ? cardField(id, 'annotation-reason').value : '',
     confirmed: false};
 }
 function applyAnnotationResult(result, id) {
@@ -212,16 +210,14 @@ function renderEditCards() {
     field('show-in-passage').onclick = () => selectEdit(edit.id, true);
     const labels = annotationDrafts.get(edit.id) || edit.annotation;
     field('acceptability').value = labels?.acceptability || '';
-    field('change-type').value = labels?.change_type || '';
     field('annotation-reason').value = labels?.reason || '';
-    for (const checkbox of field('dimensions').querySelectorAll('input')) checkbox.checked = labels?.dimensions?.includes(checkbox.value) || false;
     field('merge-next').disabled = index === run.edits.length - 1;
     for (const side of ['original', 'revised']) {
       const select = field(`${side}-cut`);
       for (const boundary of edit[`${side}_boundaries`]) select.append(new Option(boundary.label, boundary.offset));
       select.selectedIndex = Math.floor((select.options.length - 1) / 2);
     }
-    for (const name of ['acceptability', 'change-type', 'dimensions']) field(name).onchange = () => scheduleAnnotation(edit.id);
+    field('acceptability').onchange = () => scheduleAnnotation(edit.id);
     field('annotation-reason').oninput = () => scheduleAnnotation(edit.id);
     field('confirm-annotation').onclick = perform(() => confirmAnnotation(edit.id));
     field('delete-annotation').onclick = perform(() => clearAnnotation(edit.id));
@@ -231,7 +227,6 @@ function renderEditCards() {
   }
 }
 function updateLabelVisibility(id) {
-  cardField(id, 'dimensions').hidden = cardField(id, 'change-type').value !== 'fidelity_relevant';
   const needsReason = cardField(id, 'acceptability').value === 'unacceptable';
   cardField(id, 'reason-field').hidden = !needsReason;
   cardField(id, 'annotation-reason').required = needsReason;
@@ -244,7 +239,7 @@ function updateAnnotationStatus(id) {
   status.textContent = dirty ? 'Unsaved changes…' : edit?.complete ? 'Confirmed · saved locally' : edit?.annotation ?
     'Draft saved · confirm when ready' : 'Choose labels, then confirm.';
   const missingReason = cardField(id, 'acceptability').value === 'unacceptable' && !cardField(id, 'annotation-reason').value.trim();
-  cardField(id, 'confirm-annotation').disabled = !cardField(id, 'acceptability').value || !cardField(id, 'change-type').value || missingReason;
+  cardField(id, 'confirm-annotation').disabled = !cardField(id, 'acceptability').value || missingReason;
   if (missingReason) status.textContent = 'Add a short reason before confirming this unacceptable edit.';
 }
 function scheduleAnnotation(id) {
@@ -284,7 +279,6 @@ function requirementValues() {
       text: row.querySelector('.requirement-text').value,
       kind,
       outcome: kind === 'request' ? (edit_ids.length ? 'fulfilled' : 'not_fulfilled') : row.querySelector('.requirement-outcome').value,
-      explanation: row.querySelector('.requirement-explanation').value,
       edit_ids
     };
   });
@@ -332,8 +326,6 @@ function requirementRow(value = {}) {
     for (const checkbox of links.querySelectorAll('input')) checkbox.checked = false;
     outcome.value = ''; updateMapping();
   };
-  const explanation = field('Note (optional)', document.createElement('textarea'));
-  explanation.className = 'requirement-explanation'; explanation.rows = 2; explanation.value = value.explanation || '';
   row.addEventListener('input', () => { updateMapping(); scheduleRequirements(); });
   row.addEventListener('change', () => { updateMapping(); scheduleRequirements(); });
   updateMapping(); $('requirement-list').append(row);
@@ -374,7 +366,7 @@ $('confirm-requirements').onclick = perform(() => withReviewLocked(async () => {
   renderRun(); await refreshCases();
 }));
 $('clear-requirements').onclick = perform(() => withReviewLocked(async () => {
-  if (!confirm('Reset clause mappings, notes, and confirmation?')) return;
+  if (!confirm('Reset clause mappings and confirmation?')) return;
   await flushAll(); run = await api(`/api/runs/${run.id}/requirements`, {method: 'DELETE', body: '{}'});
   renderRun(); await refreshCases();
 }));

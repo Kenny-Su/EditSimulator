@@ -83,16 +83,12 @@
                 <div class="annotation-head"><h3 data-field="edit-title">Edit</h3><button data-field="show-in-passage">Show in passage</button></div>
 
                 <div class="label-grid">
-                  <label>Acceptability<select data-field="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option><option value="uncertain">Uncertain</option></select></label>
-                  <label>What changed?<select data-field="change-type"><option value="">Choose a type…</option><option value="wording_only">Wording only</option><option value="fidelity_relevant">Fidelity relevant</option><option value="uncertain">Uncertain</option></select></label>
+                  <label>Acceptability<select data-field="acceptability"><option value="">Choose a judgment…</option><option value="acceptable">Acceptable</option><option value="unacceptable">Unacceptable</option></select></label>
                 </div>
                 <label data-field="reason-field" hidden>Reason <span class="required">*</span>
                   <textarea data-field="annotation-reason" rows="3" placeholder="Why is this edit unacceptable?"></textarea>
                   <span data-field="reason-help" class="muted">Required for unacceptable edits.</span>
                 </label>
-                <fieldset data-field="dimensions" hidden><legend>Fidelity dimensions <span class="optional">optional</span></legend><div class="checks">
-                  <label><input type="checkbox" value="certainty">Certainty</label><label><input type="checkbox" value="precision">Precision</label><label><input type="checkbox" value="scope">Scope</label><label><input type="checkbox" value="emphasis">Emphasis</label><label><input type="checkbox" value="other">Other</label>
-                </div></fieldset>
                 <button data-field="confirm-annotation" class="primary">Confirm edit</button>
                 <button data-field="delete-annotation" hidden>Clear annotation</button>
                 <p data-field="annotation-status" class="muted" role="status"></p>

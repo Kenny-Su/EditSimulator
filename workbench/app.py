@@ -270,33 +270,23 @@ def create_app(config=None):
         if not group:
             abort(404, description="Edit not found. It may have been regrouped.")
         get_run(group["run_id"], completed=True)
-        acceptability, change_type = data.get("acceptability"), data.get("change_type")
-        reason = text_field(data, "reason")
-        dimensions = data.get("dimensions", [])
-        if acceptability not in (None, "acceptable", "unacceptable", "uncertain"):
+        acceptability = data.get("acceptability")
+        if acceptability not in (None, "acceptable", "unacceptable"):
             abort(400, description="Invalid acceptability label.")
-        if change_type not in (None, "wording_only", "fidelity_relevant", "uncertain"):
-            abort(400, description="Invalid change type.")
-        if not isinstance(dimensions, list) or any(not isinstance(x, str) or x not in
-                ("certainty", "precision", "scope", "emphasis", "other") for x in dimensions):
-            abort(400, description="Invalid fidelity dimensions.")
-        if change_type != "fidelity_relevant":
-            dimensions = []
+        reason = text_field(data, "reason") if acceptability == "unacceptable" else ""
         confirmed = data.get("confirmed") is True
-        if confirmed and not (acceptability and change_type):
-            abort(400, description="Choose both labels before confirming.")
+        if confirmed and not acceptability:
+            abort(400, description="Choose a judgment before confirming.")
         if confirmed and acceptability == "unacceptable" and not reason.strip():
             abort(400, description="Add a short reason before confirming an unacceptable edit.")
         stamp = storage.now()
         with db():
             db().execute("""INSERT INTO annotations
-                (edit_id, acceptability, change_type, dimensions_json, reason, created_at, updated_at, confirmed_at)
-                VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(edit_id) DO UPDATE SET
-                acceptability=excluded.acceptability, change_type=excluded.change_type,
-                reason=excluded.reason,
-                dimensions_json=excluded.dimensions_json, updated_at=excluded.updated_at,
-                confirmed_at=excluded.confirmed_at""",
-                (edit_id, acceptability, change_type, json.dumps(list(dict.fromkeys(dimensions))), reason, stamp, stamp, stamp if confirmed else None))
+                (edit_id, acceptability, reason, created_at, updated_at, confirmed_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(edit_id) DO UPDATE SET
+                acceptability=excluded.acceptability, reason=excluded.reason,
+                updated_at=excluded.updated_at, confirmed_at=excluded.confirmed_at""",
+                (edit_id, acceptability, reason, stamp, stamp, stamp if confirmed else None))
             db().execute("UPDATE runs SET reviewed_at=NULL, updated_at=? WHERE id=?", (stamp, group["run_id"]))
         return jsonify(display_run(get_run(group["run_id"])))
 
@@ -423,7 +413,7 @@ def create_app(config=None):
             paper_ids = {c["provenance"]["paper_id"] for c in cases if c["provenance"]}
             paper_ids.update(r["snapshot"]["provenance"]["paper_id"] for c in cases for r in c["runs"] if r["snapshot"].get("provenance"))
             papers = [get_paper(pid, True) for pid in sorted(paper_ids)]
-        result = {"schema_version": 5, "exported_at": storage.now(),
+        result = {"schema_version": 6, "exported_at": storage.now(),
                   "span_convention": "half-open Unicode code-point offsets into immutable run snapshot.original and run.revised",
                   "scope": "reviewed" if reviewed_only else "all", "cases": cases, "papers": papers}
         response = jsonify(result)

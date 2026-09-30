@@ -23,11 +23,11 @@ def connect(path):
 def initialize(path):
     with closing(connect(path)) as db, db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 3:
+        if version > 4:
             raise ValueError("Database was created by a newer workbench.")
         db.execute("PRAGMA journal_mode = WAL")
         # Pre-v3 datasets are disposable; reset rather than migrate them.
-        reset = "" if version == 3 else "".join(
+        reset = "" if version >= 3 else "".join(
             f"DROP TABLE IF EXISTS {table};" for table in (
                 "annotations", "suggestions", "requirement_audits", "edit_groups",
                 "suggestion_jobs", "runs", "cases", "sources", "papers"))
@@ -61,7 +61,7 @@ def initialize(path):
         );
         CREATE TABLE IF NOT EXISTS annotations (
           edit_id TEXT PRIMARY KEY REFERENCES edit_groups(id) ON DELETE CASCADE,
-          acceptability TEXT, change_type TEXT, dimensions_json TEXT NOT NULL DEFAULT '[]',
+          acceptability TEXT,
           reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
           confirmed_at TEXT
         );
@@ -69,15 +69,40 @@ def initialize(path):
           run_id TEXT PRIMARY KEY REFERENCES runs(id), annotation_json TEXT NOT NULL,
           confirmed_at TEXT, updated_at TEXT NOT NULL
         );
-        PRAGMA user_version = 3;
-        COMMIT;
-        """)
+        """ + ("""
+        UPDATE runs SET reviewed_at=NULL WHERE id IN (
+          SELECT e.run_id FROM edit_groups e JOIN annotations a ON a.edit_id=e.id
+          WHERE a.acceptability = 'uncertain'
+        );
+        CREATE TABLE annotations_v4 (
+          edit_id TEXT PRIMARY KEY REFERENCES edit_groups(id) ON DELETE CASCADE,
+          acceptability TEXT, reason TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, confirmed_at TEXT
+        );
+        INSERT INTO annotations_v4
+          SELECT edit_id,
+                 CASE WHEN acceptability IN ('acceptable', 'unacceptable') THEN acceptability END,
+                 CASE WHEN acceptability = 'unacceptable' THEN reason ELSE '' END,
+                 created_at, updated_at,
+                 CASE WHEN acceptability IN ('acceptable', 'unacceptable') THEN confirmed_at END
+          FROM annotations;
+        DROP TABLE annotations;
+        ALTER TABLE annotations_v4 RENAME TO annotations;
+        """ if version == 3 else "") + "PRAGMA user_version = 4; COMMIT;")
+        # Remove retired clause notes without changing labels or confirmation state.
+        for audit in db.execute("SELECT run_id, annotation_json FROM requirement_audits").fetchall():
+            rows = json.loads(audit["annotation_json"])
+            if any("explanation" in row for row in rows):
+                for row in rows:
+                    row.pop("explanation", None)
+                db.execute("UPDATE requirement_audits SET annotation_json=? WHERE run_id=?",
+                           (json.dumps(rows), audit["run_id"]))
         db.execute("UPDATE runs SET status='interrupted', error=?, updated_at=? WHERE status='pending'",
                    ("Generation interrupted. Retry as a new run.", now()))
 
 
 def annotation_complete(a):
-    return bool(a and a.get("acceptability") and a.get("change_type") and a.get("confirmed_at")
+    return bool(a and a.get("acceptability") in ("acceptable", "unacceptable") and a.get("confirmed_at")
                 and (a["acceptability"] != "unacceptable" or a.get("reason", "").strip()))
 
 
@@ -108,8 +133,6 @@ def run_record(db, run_id):
         group = dict(row)
         a = db.execute("SELECT * FROM annotations WHERE edit_id=?", (group["id"],)).fetchone()
         group["annotation"] = dict(a) if a else None
-        if a:
-            group["annotation"]["dimensions"] = json.loads(group["annotation"].pop("dimensions_json"))
         group["complete"] = annotation_complete(group["annotation"])
         run["edits"].append(group)
     run["labeled_count"] = sum(e["complete"] for e in run["edits"])

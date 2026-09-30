@@ -21,7 +21,7 @@ Open http://127.0.0.1:5000. Run one process, without a reloader. Restart after c
 
 1. Import ACM full-text XML and select a passage.
 2. Write one request or prohibition per line; generate a revision.
-3. Review the unified diff. Label each edit's acceptability and change type. Give a reason for unacceptable edits, including unauthorized changes. Confirm each edit.
+3. Review the unified diff. Mark each edit acceptable or unacceptable. Add a short reason for unacceptable edits, including unauthorized changes. Confirm each edit.
 4. Select fulfilling edits for each request; an empty list means omitted. For prohibitions, judge compliance and select violations. Confirm the clauses.
 5. Mark reviewed and export JSON.
 
@@ -36,4 +36,4 @@ Every edit and clause is confirmed, every unacceptable edit has a reason, and th
 - Database: `instance/workbench.sqlite3`; override with `WORKBENCH_DB`. Stop the app before backing up `instance/`.
 - Generation sends the passage and instruction to the configured provider. Optional gateway: `OPENAI_BASE_URL`.
 - Exports retain frozen inputs, provenance, and labels. Offsets are half-open Unicode code points.
-- Schema v3 resets older workbench databases on startup. Current data persists across restarts. Deletions are permanent.
+- Schema v4 preserves v3 judgments and removes change types and fidelity dimensions. Older uncertain judgments become unconfirmed drafts. Pre-v3 databases reset on startup. Deletions are permanent.

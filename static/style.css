@@ -12,8 +12,7 @@ h1, h2, h3, p { margin: 0; }
 h1 { font-size: 19px; font-weight: 600; }
 h2 { font-size: 15px; font-weight: 600; }
 h3 { font-size: 13px; font-weight: 600; }
-.muted, .optional, #save-status, .eyebrow { color: #777; font-size: 12px; }
-.optional { font-weight: 400; margin-left: 4px; }
+.muted, #save-status, .eyebrow { color: #777; font-size: 12px; }
 .eyebrow { display: block; margin-bottom: 4px; }
 label { display: block; font-size: 12px; font-weight: 500; }
 input:not([type=checkbox]), textarea { display: block; width: 100%; margin-top: 4px; }
@@ -73,7 +72,7 @@ main { flex: 1; min-width: 0; max-width: 1240px; padding: 0 28px 32px; }
 #progress { margin-right: auto; }
 #requirements-panel { border-block: 1px solid #ddd; padding: 14px 0; margin-bottom: 16px; }
 .requirement-row { border-bottom: 1px solid #eee; padding: 12px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.requirement-row label:first-child, .requirement-row label:has(textarea), .requirement-edits { grid-column: 1 / -1; }
+.requirement-row label:first-child, .requirement-edits { grid-column: 1 / -1; }
 .requirement-row select { display: block; width: 100%; }
 #requirements-panel > button { margin-top: 12px; }
 .requirement-edits { margin: 0; min-width: 0; border: 1px solid #ddd; border-radius: 4px; padding: 12px; }
@@ -105,8 +104,6 @@ main { flex: 1; min-width: 0; max-width: 1240px; padding: 0 28px 32px; }
 .annotation-head button { padding: 3px 9px; }
 .label-grid { display: grid; gap: 8px; margin-bottom: 12px; }
 .label-grid select, .split-controls select { display: block; width: 100%; margin-top: 4px; }
-.checks { display: flex; gap: 12px; flex-wrap: wrap; }
-.checks label { display: flex; align-items: center; gap: 4px; font-weight: 400; }
 [data-field="annotation-status"] { margin-top: 8px; }
 [data-field="reason-field"] { margin: 12px 0; }
 .split-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
