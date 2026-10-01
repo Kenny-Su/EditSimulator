@@ -23,15 +23,13 @@ def connect(path):
 def initialize(path):
     with closing(connect(path)) as db, db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 4:
-            raise ValueError("Database was created by a newer workbench.")
+        has_tables = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone() is not None
+        if version != 4 and (version != 0 or has_tables):
+            raise ValueError("Unsupported database schema. Expected schema version 4.")
         db.execute("PRAGMA journal_mode = WAL")
-        # Pre-v3 datasets are disposable; reset rather than migrate them.
-        reset = "" if version >= 3 else "".join(
-            f"DROP TABLE IF EXISTS {table};" for table in (
-                "annotations", "suggestions", "requirement_audits", "edit_groups",
-                "suggestion_jobs", "runs", "cases", "sources", "papers"))
-        db.executescript("BEGIN IMMEDIATE;" + reset + """
+        db.executescript("""BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS papers (
           id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE, xml TEXT NOT NULL,
           document_json TEXT NOT NULL, filename TEXT NOT NULL, created_at TEXT NOT NULL
@@ -69,34 +67,9 @@ def initialize(path):
           run_id TEXT PRIMARY KEY REFERENCES runs(id), annotation_json TEXT NOT NULL,
           confirmed_at TEXT, updated_at TEXT NOT NULL
         );
-        """ + ("""
-        UPDATE runs SET reviewed_at=NULL WHERE id IN (
-          SELECT e.run_id FROM edit_groups e JOIN annotations a ON a.edit_id=e.id
-          WHERE a.acceptability = 'uncertain'
-        );
-        CREATE TABLE annotations_v4 (
-          edit_id TEXT PRIMARY KEY REFERENCES edit_groups(id) ON DELETE CASCADE,
-          acceptability TEXT, reason TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, confirmed_at TEXT
-        );
-        INSERT INTO annotations_v4
-          SELECT edit_id,
-                 CASE WHEN acceptability IN ('acceptable', 'unacceptable') THEN acceptability END,
-                 CASE WHEN acceptability = 'unacceptable' THEN reason ELSE '' END,
-                 created_at, updated_at,
-                 CASE WHEN acceptability IN ('acceptable', 'unacceptable') THEN confirmed_at END
-          FROM annotations;
-        DROP TABLE annotations;
-        ALTER TABLE annotations_v4 RENAME TO annotations;
-        """ if version == 3 else "") + "PRAGMA user_version = 4; COMMIT;")
-        # Remove retired clause notes without changing labels or confirmation state.
-        for audit in db.execute("SELECT run_id, annotation_json FROM requirement_audits").fetchall():
-            rows = json.loads(audit["annotation_json"])
-            if any("explanation" in row for row in rows):
-                for row in rows:
-                    row.pop("explanation", None)
-                db.execute("UPDATE requirement_audits SET annotation_json=? WHERE run_id=?",
-                           (json.dumps(rows), audit["run_id"]))
+        PRAGMA user_version = 4;
+        COMMIT;
+        """)
         db.execute("UPDATE runs SET status='interrupted', error=?, updated_at=? WHERE status='pending'",
                    ("Generation interrupted. Retry as a new run.", now()))
 

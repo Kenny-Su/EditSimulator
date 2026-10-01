@@ -32,7 +32,6 @@ def validate_requirements(rows, run, draft=False):
             row['outcome'] = 'fulfilled' if row['edit_ids'] else 'not_fulfilled'
         if row.get('outcome') not in OUTCOMES[row['kind']] and not (draft and row.get('outcome') == ''):
             raise ValueError('Choose an outcome for each prohibition.')
-        row.pop('explanation', None)
     if [row['text'] for row in rows] != instruction_lines(run['snapshot']['instruction']):
         raise ValueError('Keep one clause per instruction line, in order.')
     return rows

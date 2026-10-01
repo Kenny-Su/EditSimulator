@@ -36,4 +36,4 @@ Every edit and clause is confirmed, every unacceptable edit has a reason, and th
 - Database: `instance/workbench.sqlite3`; override with `WORKBENCH_DB`. Stop the app before backing up `instance/`.
 - Generation sends the passage and instruction to the configured provider. Optional gateway: `OPENAI_BASE_URL`.
 - Exports retain frozen inputs, provenance, and labels. Offsets are half-open Unicode code points.
-- Schema v4 preserves v3 judgments and removes change types and fidelity dimensions. Older uncertain judgments become unconfirmed drafts. Pre-v3 databases reset on startup. Deletions are permanent.
+- Deletions are permanent.
